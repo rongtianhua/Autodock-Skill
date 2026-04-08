@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "skills": {
+    "feishu-bridge": {
+      "version": "1.0.0",
+      "installedAt": 1774724475962
+    },
+    "self-improving-agent": {
+      "version": "3.0.10",
+      "installedAt": 1774761724580
+    },
+    "skill-builder": {
+      "version": "1.0.5",
+      "installedAt": 1774784297187
+    },
+    "skill-vetter": {
+      "version": "1.0.0",
+      "installedAt": 1774788246236
+    },
+    "skill-creator": {
+      "version": "0.1.0",
+      "installedAt": 1774790602316
+    },
+    "self-improving": {
+      "version": "1.2.16",
+      "installedAt": 1774792176366
+    },
+    "self-reflection": {
+      "version": "1.1.1",
+      "installedAt": 1774792198802
+    },
+    "self-evolve": {
+      "version": "1.0.0",
+      "installedAt": 1774792242860
+    },
+    "elite-longterm-memory": {
+      "version": "1.2.3",
+      "installedAt": 1774792390094
+    },
+    "agent-autonomy-kit": {
+      "version": "1.0.0",
+      "installedAt": 1774824458555
+    },
+    "agent-evaluation": {
+      "version": "1.0.0",
+      "installedAt": 1774792555575
+    },
+    "summarize": {
+      "version": "1.0.0",
+      "installedAt": 1774884370687
+    },
+    "self-improving-proactive-agent": {
+      "version": "1.0.0",
+      "installedAt": 1774885104669
+    },
+    "Proactive-Agent": {
+      "version": "3.1.0",
+      "installedAt": 1774885153228
+    },
+    "Free-Ride": {
+      "version": "1.0.7",
+      "installedAt": 1774885408950
+    },
+    "Clawdbot-Documentation-Expert": {
+      "version": "1.0.0",
+      "installedAt": 1774887004267
+    },
+    "china-stock-analysis": {
+      "version": "1.0.0",
+      "installedAt": 1775104292484
+    },
+    "akshare-stock": {
+      "version": "1.0.1",
+      "installedAt": 1775329510470
+    },
+    "tushare-stock-skill": {
+      "version": "1.0.3",
+      "installedAt": 1775104314712
+    },
+    "asset-allocation": {
+      "version": "1.0.1",
+      "installedAt": 1775104319915
+    },
+    "wealth": {
+      "version": "1.0.1",
+      "installedAt": 1775104324843
+    },
+    "investment-framework-skill": {
+      "version": "1.0.0",
+      "installedAt": 1775104386229
+    },
+    "find-skills-skill": {
+      "version": "1.0.0",
+      "installedAt": 1775119022929
+    }
+  }
+}

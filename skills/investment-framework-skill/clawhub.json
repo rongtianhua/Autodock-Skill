@@ -1,0 +1,69 @@
+{
+  "name": "investment-framework",
+  "version": "3.0.0",
+  "description": "投资框架技能包 - 基于 5 本经典投资书籍 + 中国投资大师智慧的 AI 辅助投资决策系统",
+  "author": "燃冰 + 小蚂蚁",
+  "license": "MIT",
+  "keywords": [
+    "投资",
+    "价值投资",
+    "资产配置",
+    "护城河",
+    "决策清单",
+    "邱国鹭",
+    "段永平",
+    "李录",
+    "吴军"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lj22503/investment-framework-skill.git"
+  },
+  "homepage": "https://clawhub.ai/lj22503/investment-framework",
+  "bugs": {
+    "url": "https://github.com/lj22503/investment-framework-skill/issues"
+  },
+  "skills": [
+    "value-analyzer",
+    "moat-evaluator",
+    "intrinsic-value-calculator",
+    "decision-checklist",
+    "asset-allocator",
+    "industry-analyst",
+    "future-forecaster",
+    "cycle-locator",
+    "stock-picker",
+    "portfolio-designer",
+    "global-allocator",
+    "simple-investor",
+    "bias-detector",
+    "second-level-thinker",
+    "qiu-guolu-investor",
+    "duan-yongping-investor",
+    "li-lu-investor",
+    "wu-jun-investor"
+  ],
+  "categories": [
+    "投资",
+    "金融",
+    "决策",
+    "分析"
+  ],
+  "requirements": {
+    "python": ">=3.8",
+    "packages": []
+  },
+  "usage": {
+    "examples": [
+      "@ant 分析贵州茅台，是否符合价值投资标准？",
+      "@ant 我 35 岁，有 100 万，如何配置资产？",
+      "@ant 分析新能源汽车行业，现在值得投资吗？",
+      "@ant 我想买入宁德时代，帮我检查这个决策"
+    ]
+  },
+  "publish": {
+    "platform": "clawhub",
+    "author_id": "lj22503",
+    "visibility": "public"
+  }
+}

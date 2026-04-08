@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "updatedAt": "2026-04-07T13:18:50.088Z",
+  "entries": {
+    "memory:memory/2026-04-04.md:24:36": {
+      "key": "memory:memory/2026-04-04.md:24:36",
+      "path": "memory/2026-04-04.md",
+      "startLine": 24,
+      "endLine": 36,
+      "source": "memory",
+      "snippet": "- Fallback: `kimi/kimi-code` → `ollama/kimi-k2.5:cloud` → `openrouter/stepfun/step-3.5-flash:free` → `openrouter/nvidia/nemotron-3-super-120b-a12b:free` → `openrouter/minimax/minimax-m2.5:free` - thinkingDefault: medium - 从模型列表删除了 `openrouter/auto` - `claude-opus-4-6` 不是本地配置，是 OpenRouter auto 路由的后端映射 ## 记忆维护（2026-04-05 心跳） - 执行了记忆维护，将 Tailscale 远程访问、SSH、版本更新配置丢失、模型配置等经验提炼到 MEMORY.md ## 配置文件路径 - 主配置：`~/.openclaw/openclaw.json` - Agent 运行时模型缓存：`~/.openclaw/agents/[name]/agent/models.json`（自动生成，不需手动改） - 微信账户：`~/.openclaw/openclaw-weixin/accounts/`",
+      "recallCount": 1,
+      "dailyCount": 0,
+      "totalScore": 0.4094603896141052,
+      "maxScore": 0.4094603896141052,
+      "firstRecalledAt": "2026-04-07T13:18:50.088Z",
+      "lastRecalledAt": "2026-04-07T13:18:50.088Z",
+      "queryHashes": [
+        "875c5f47784f"
+      ],
+      "recallDays": [
+        "2026-04-07"
+      ],
+      "conceptTags": [
+        "router",
+        "kimi/kimi-code",
+        "ollama/kimi-k2.5",
+        "openrouter/minimax/minimax-m2.5",
+        "openrouter/auto",
+        "claude-opus-4-6",
+        "memory.md",
+        "openclaw/openclaw.json"
+      ]
+    },
+    "memory:memory/2026-04-03.md:1:31": {
+      "key": "memory:memory/2026-04-03.md:1:31",
+      "path": "memory/2026-04-03.md",
+      "startLine": 1,
+      "endLine": 31,
+      "source": "memory",
+      "snippet": "# 2026-04-03 Daily Notes ## 记忆维护 - 执行了记忆维护（上次 2026-04-01，间隔 2 天） - 将 thinking 配置要点、改进建议分层、Ollama 云模型配置提炼到 MEMORY.md # 2026-04-03 Daily Notes ## 记忆维护 - 执行了记忆维护（上次 2026-04-01，间隔 2 天） - 将 thinking 配置要点、改进建议分层、Ollama 云模型配置提炼到 MEMORY.md ## Model 配置修正 - 发现默认模型名从 `qwen3.6-plus-preview:free` 变为 `qwen3.6-plus:free`（去掉 -preview） - 修正了 `agents.defaults.model.primary`（`openrouter/qwen/qwen3.6-plus:free`） - 同时修正 `agents.defaults.models` 字典（remove preview, add new） - 用户自己用命令切会报 \"model not allowed\" 原因：models 字典里没加新模型 - Gateway 已重启，新会话正常 ## 时区配置（双保险） - Mac mini 系统时区设为美国东4（VPN 需要），实际用户在中国 - **方案 1（环境变量）：** LaunchAgent plist 加 `TZ=Asia/Shanghai` - **方案 2（OpenClaw 配置）：** `envelopeTimezone: \"Asia/Shanghai\"`",
+      "recallCount": 1,
+      "dailyCount": 0,
+      "totalScore": 0.400428369641304,
+      "maxScore": 0.400428369641304,
+      "firstRecalledAt": "2026-04-07T13:18:50.088Z",
+      "lastRecalledAt": "2026-04-07T13:18:50.088Z",
+      "queryHashes": [
+        "875c5f47784f"
+      ],
+      "recallDays": [
+        "2026-04-07"
+      ],
+      "conceptTags": [
+        "gateway",
+        "router",
+        "memory.md",
+        "qwen3.6-plus-preview",
+        "qwen3.6-plus",
+        "agents.defaults.model.primary",
+        "openrouter/qwen/qwen3.6-plus",
+        "agents.defaults.models"
+      ]
+    },
+    "memory:memory/2026-04-04.md:1:29": {
+      "key": "memory:memory/2026-04-04.md:1:29",
+      "path": "memory/2026-04-04.md",
+      "startLine": 1,
+      "endLine": 29,
+      "source": "memory",
+      "snippet": "# 2026-04-04 (Sat) ## Tailscale 远程访问配置 - 用户安装 Tailscale，想远程访问 OpenClaw Dashboard - Funnel 未启用（需去 Tailscale Admin 开启） - 改用 Serve 模式：`tailscale serve --bg http://localhost:18789` - Dashboard 地址：`https://allens-mac-mini.tail1b1f0d.ts.net` - `dangerouslyDisableDeviceAuth: true` 用于跨设备登录 ## SSH 远程终端 - 开启系统设置 → 远程登录 - 用户名是 `allenrong`（不是 `allen`，也不是 macOS 显示名 `Allen Rong`） - 通过 Tailscale SSH：`ssh allenrong@allens-mac-mini` ## OpenClaw 版本更新导致配置丢失 - 更新 OpenClaw 后 `openclaw.json` 的 channels 配置被清空 - 微信不受影响（独立扩展，账户文件在 `extensions/openclaw-weixin/`） - 飞书配置丢失（内置扩展，配置在 openclaw.json channels 字段） - 手动恢复飞书配置到 openclaw.json - **教训**：`openclaw configure` 向导会覆盖整个 channels 字段，不要随便跑 ## 模型配置 - Primary: `openro",
+      "recallCount": 1,
+      "dailyCount": 0,
+      "totalScore": 0.3958506196737289,
+      "maxScore": 0.3958506196737289,
+      "firstRecalledAt": "2026-04-07T13:18:50.088Z",
+      "lastRecalledAt": "2026-04-07T13:18:50.088Z",
+      "queryHashes": [
+        "875c5f47784f"
+      ],
+      "recallDays": [
+        "2026-04-07"
+      ],
+      "conceptTags": [
+        "allens-mac-mini",
+        "openclaw.json",
+        "extensions/openclaw-weixin",
+        "sat",
+        "tailscale",
+        "远程",
+        "访问",
+        "配置"
+      ]
+    }
+  }
+}

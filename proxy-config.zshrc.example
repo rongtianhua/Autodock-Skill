@@ -1,0 +1,29 @@
+# ============================================
+# v2rayN 代理配置 (Manual 模式)
+# 使用说明：
+# 1. 将 [IP_ADDRESS] 替换为 v2rayN 显示的本地监听地址 (通常是 127.0.0.1 或 192.168.x.x)
+# 2. 端口号默认 10809 (根据 v2rayN 设置调整)
+# 3. 调整 no_proxy 列表，白名单国内域名
+# ============================================
+
+# 代理服务器地址
+export http_proxy="http://[IP_ADDRESS]:10809"
+export https_proxy="http://[IP_ADDRESS]:10809"
+export all_proxy="socks5://[IP_ADDRESS]:10808"  # socks5 端口
+
+# 不代理的域名/网段 (直连)
+# 格式：逗号分隔，支持通配符和网段
+export no_proxy="localhost,127.0.0.1,::1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,.cn,.com.cn,.net.cn,.org.cn,.gov.cn,edu.cn,mail.ru,facebook.com,github.com,gitlab.com"
+
+# 可选：让 curl 等工具自动识别代理
+export CURL_CA_BUNDLE="/etc/ssl/cert.pem"  # macOS SSL 证书路径
+
+# Git 独立配置 (避免环境变量失效时还能用)
+git config --global http.proxy "http://[IP_ADDRESS]:10809" 2>/dev/null || true
+git config --global https.proxy "http://[IP_ADDRESS]:10809" 2>/dev/null || true
+
+# 提示信息
+if [[ -n "$http_proxy" ]]; then
+  echo "🛡️  终端代理已启用: $http_proxy"
+  echo "🚫 直连白名单: $no_proxy"
+fi
