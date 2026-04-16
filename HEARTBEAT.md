@@ -2,13 +2,6 @@
 
 ## 定期任务（每 2-3 天执行一次，不要每次心跳都执行）
 
-### Dreaming 状态检查（每周执行一次）
-1. 运行 `openclaw memory status --deep` 查看 Dreaming 是否正常运行
-2. 检查 `promoted-today` 数量，确认有内容被自动晋升
-3. 如有异常情况，尝试 `openclaw memory promote --limit 5` 手动预览晋升候选
-4. 检查 `DREAMS.md`（或 `dreams.md`）是否有新梦境日记
-5. 注意：日常记忆维护已由 Dreaming 自动接管（每天凌晨 3 点），不再需要手动执行
-
 ### Self-Reflection 自查（每 60 分钟检查一次，间隔≥2 天执行）
 1. 运行 self-reflection 逻辑：读取近期教训，反思改进点
 2. 将反思结果写入 `memory/self-review.md`
@@ -35,8 +28,13 @@
 ## 状态追踪
 每次执行维护后更新此文件中的日期，下次心跳检查是否已过 2 天。
 
-上次记忆维护：2026-04-05
-上次配置备份：2026-04-05
+上次记忆维护：2026-04-14
+
+## 明日开盘任务（开盘后30分钟内执行）
+1. **调试涨停跌停数据**：调用 `stock_zt_pool_em` 验证是否能在交易时段返回数据，若有数据则接入情绪分析器
+2. **调试北向资金**：验证 `stock_hsgt_hist_em` 盘后数据是否在15:30后可用；若盘中想获取北向实时数据，测试 `stock_hsgt_fund_flow_summary_em` 的 `shgt_north_net_inflow` 字段是否有值
+3. **记录结果**：成功则更新 sentiment_analyzer.py；失败则维持现状
+上次配置备份：2026-04-11
 
 ## 配置守护与热重载优化
 
@@ -109,12 +107,38 @@ openclaw config set gateway.port 18790
    - 如仅热重载 → 无需操作，网关自动应用
 5. **验证** → 发消息到各通道确认正常
 
-#### 高危命令拦截
-以下命令执行前 **必须先备份并提醒用户**：
-- `openclaw onboard` → **初始化向导，会清空所有配置**（用户曾误敲此命令代替 configure）
-- `openclaw configure` → **配置向导，会覆盖 channels 字段**
-- `openclaw upgrade` → 版本更新可能触发配置迁移
-- 直接编辑 `~/.openclaw/openclaw.json` → 需要 validate 后才能 restart
+#### 高危命令拦截（新增）
+以下命令执行前 **必须先运行安全检查**：
+
+**重启/停止类：**
+- `openclaw gateway restart` → 先运行 `check-active-tasks.sh`
+- `openclaw gateway stop` → 确认无活跃任务
+
+**配置修改类：**
+- 任何修改 `gateway.*`、`plugins.*`、`channels.*` 的操作 → 运行 `assess-config-impact.sh`
+
+**检查流程：**
+```bash
+# 1. 检查活跃任务
+~/.openclaw/workspace/skills/config-guardian/scripts/check-active-tasks.sh
+# 如果返回非0，询问用户是否继续
+
+# 2. 评估配置变更影响
+~/.openclaw/workspace/skills/config-guardian/scripts/assess-config-impact.sh <paths>
+# 如果需要重启且有活跃任务 → 必须询问用户
+```
+
+#### 智能配置修改 SOP（更新）
+```
+1. 备份 → backup-configs.sh
+2. 修改 → 编辑配置文件
+3. 评估 → assess-config-impact.sh <修改的路径>
+4. 决策：
+   - 如果影响级别=high + 有活跃任务 → **必须询问用户**
+   - 如果需要重启 + 用户未明确同意 → **停止并询问**
+   - 仅热重载 → 等待自动应用
+5. 验证 → 测试通道是否正常
+```
 
 #### 定期备份（每 3 天执行一次）
 - 运行 `backup-configs.sh` 创建完整备份
