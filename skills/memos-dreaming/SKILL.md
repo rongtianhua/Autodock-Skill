@@ -67,23 +67,38 @@ python3 ~/.openclaw/workspace/skills/memos-dreaming/scripts/memos_dreaming.py --
 | 文件 | 位置 | 说明 |
 |---|---|---|
 | DREAMS.md | workspace/ | 审查草稿，每次运行覆盖，包含所有候选条目和评分🆕=新候选 |
+| AUDIT.md | workspace/ | 每周审计报告，含去重/过期/噪声发现和修复建议 |
 | MEMORY.md | workspace/ | 长期记忆，正式写入位置 |
 | promoted.jsonl | workspace/.memos-dreaming/ | 已promote条目的去重索引 |
+| audits/ | workspace/.memos-dreaming/audits/ | 审计自动备份目录 |
 
 ---
 
 ## ⏰ Cron 配置
 
-**状态**: 每日凌晨 3:00 自动执行（北京时间）
+**每日 Dreaming（凌晨 3:00 北京时间）**
+- 自动执行双源蒸馏 + 写入 MEMORY.md
+- Cron ID: `2f918133-520a-43f7-b725-21630d33007c`
+
+**每周审计（周六 10:00 北京时间）**
+- 扫描 MEMORY.md：重复条目、过期内容、噪声清理
+- Cron ID: `606eead7-9345-45dc-88a7-b88b54b7b901`
+- 审计报告输出到 `workspace/AUDIT.md`
+- `--apply` 模式自动清理高置信度噪声（自动备份）
 
 **验证 cron 是否配置**:
 ```bash
-openclaw cron list | grep dreaming
+openclaw cron list | grep -i dreaming
 ```
 
-**手动触发一次（不写入）**:
+**手动触发 Dreaming（不写入）**:
 ```bash
 cd ~/.openclaw/workspace/skills/memos-dreaming/scripts && python3 memos_dreaming.py
+```
+
+**手动触发审计**:
+```bash
+cd ~/.openclaw/workspace/skills/memos-dreaming/scripts && python3 memos_dreaming_audit.py
 ```
 
 ---
