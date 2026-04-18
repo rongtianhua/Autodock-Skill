@@ -52,12 +52,17 @@ Skills are shared. Your setup is yours. Keeping them apart means you can update 
 ### R + Bioconductor
 - **R 版本**: 4.5.3 (Homebrew)
 - **R 库路径**: `/opt/homebrew/lib/R/4.5/site-library/`
-- **已装 Bioconductor 包**: SummarizedExperiment, GenomicRanges, MatrixGenerics, IRanges, S4Vectors, Biobase, BiocGenerics, stats4
+- **已装 Bioconductor 包**: DESeq2, SingleCellExperiment, scater, scran, ComplexHeatmap, SummarizedExperiment, GenomicRanges, rtracklayer, GenomicFeatures, VariantAnnotation, AnnotationHub ✅
 - **安装命令**: `BiocManager::install('包名', ask=FALSE)`
 
-### Docker
-- **Docker Desktop**: `/Applications/Docker Desktop.app`（需手动打开）
-- **Docker socket**: `/var/run/docker.sock`（daemon 启动后可用）
+### Docker（Colima 运行时）
+- **运行时**: Colima（`brew install colima`）
+- **Docker socket**: `~/.colima/docker/docker.sock`
+- **启动**: `colima start --runtime docker`
+- **开机自启**: `brew services start colima`（已配置）
+- **Docker 版本**: 29.4.0
+- **当前 context**: `colima`
+- **注意**: Docker Desktop（`/Applications/Docker.app`）因无显示器无法运行，已停用
 
 ### 已安装的 Python 包（bioinformatics）
 ```
@@ -78,9 +83,10 @@ google-cloud-bigquery 3.41.0
 | clinpgx | ✅ |
 | fine-mapping | ✅ |
 | rnaseq-de | ✅ |
-| galaxy-bridge | ✅ (离线demo) |
-| methylation-clock | ⚠️ 需 pyaging（Python 3.14 不兼容）|
+| galaxy-bridge | ✅ |
+| methylation-clock | ✅ (pyaging 0.1.30 环境已就绪) |
 
-### pyaging Python 3.14 兼容问题
-methylation-clock 技能需要 `pyaging`，当前 PyPI 上最高版本仅支持 Python <3.14。
-解决方案：创建一个 Python 3.13 的虚拟环境专门给 methylation-clock 用。
+### methylation-clock（pyaging 环境）
+- **Python 环境**: Miniconda Python 3.13（`~/miniconda3/envs/pyaging/`）
+- **运行方式**: `~/miniconda3/envs/pyaging/bin/python` 或 `source ~/miniconda3/etc/profile.d/conda.sh && conda activate pyaging`
+- **pyaging 版本**: 0.1.30 ✅ 已安装
