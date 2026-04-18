@@ -77,6 +77,13 @@
 - 突然断电（跳闸）后，macOS 可能触发 fsck 文件系统检查，自动登录恢复需要等检查完成
 - 电源恢复场景："在电源恢复后重启"设置可能导致循环重启，需人工介入
 
+## 今日安装技能（2026-04-18）
+- `using-superpowers` — 对话入口技能（强制调用技能检查）
+- `superpowers` — Spec-First + TDD + 子代理开发工作流
+- `superpowers-cn` — 中文 AI 工作流框架
+- `openclaw-agent-browser` + `agent-browser-cli` — 浏览器自动化（已安装 Chrome 147）
+- `openclaw-task-executor` — 任务执行协议（Plan→Spawn→Monitor→Report，2026-04-15）
+
 ## Preferences
 - Use local models where possible
 - Context: workspace /Users/allenrong/.openclaw/workspace
