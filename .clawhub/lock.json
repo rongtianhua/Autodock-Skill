@@ -144,6 +144,10 @@
     "openclaw-task-executor": {
       "version": "1.0.0",
       "installedAt": 1776506423537
+    },
+    "agent-orchestrator": {
+      "version": "0.1.0",
+      "installedAt": 1776507015063
     }
   }
 }
