@@ -1,0 +1,55 @@
+{
+  "skill_name": "stock-skill-data-fusion-upgrade",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "帮我分析贵州茅台600519，今天的完整诊断报告，需要包含技术面、基本面、资金面和情绪面所有维度，还有五档盘口和主力净流入数据。",
+      "expectations": [
+        "调用腾讯API获取主数据源",
+        "补充新浪API的委比、状态码、时间戳和五档盘口数据",
+        "调用东财push2delay API获取主力净流入(3日/5日/10日累计)",
+        "生成五维雷达分析",
+        "输出包含综合决策指示表(时机/仓位/动作/周期/退出)",
+        "风险清单五项逐一打勾(ST退市/估值/流动性/主力筹码/情绪)",
+        "报告版本标注v2.6.0"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 2,
+      "prompt": "之前新浪API返回的五档数据有问题，bid5价格和腾讯对不上，你们检查下索引是不是哪里写错了？还有一个问题，东财的playwright被验证码挡了，能不能换成API方式？",
+      "expectations": [
+        "检查新浪API五档数据索引，原始代码[11,13,15,17,7]应修正为[11,13,15,17,19]",
+        "验证修正后新浪bid5与腾讯bid5一致",
+        "将东财Playwright方案替换为push2delay.eastmoney.com JSON API",
+        "补充说明教训：任何API字段索引不能假设一致，必须先打印原始数据验证",
+        "更新相关文档(SKILL.md/README.md/USAGE_GUIDE.md)"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 3,
+      "prompt": "cron任务跑股票提醒总是超时，帮我看看咋回事。另外技能路径好像也不对，我之前一直用的是workspace里的，但文档说应该在~/.openclaw/skills/公共目录？",
+      "expectations": [
+        "检查cron任务配置，将超时时间从30s增加到120s",
+        "验证智谱提醒定时任务设置为每天09:50 Asia/Shanghai",
+        "确认技能路径在~/.openclaw/skills/a-stock-trader-pro/",
+        "更新puff行动手册中的技能调用路径"
+      ],
+      "trigger_confidence": "medium"
+    },
+    {
+      "id": 4,
+      "prompt": "我想要宁德时代300750的决策报告，要包含主力3日净流入和仓位建议，akshare能直接调吗？另外涨跌家数和北向资金有没有可靠来源？",
+      "expectations": [
+        "调研akshare stock_market_fund_flow接口获取全市场主力净流入",
+        "调研akshare stock_hsgt_fund_flow_summary_em获取北向资金和涨跌家数",
+        "调研东财ulist.np API对指数的可用性",
+        "给出涨跌家数数据源受限的结论",
+        "基于主力3日净流入生成仓位速查表建议",
+        "综合决策指示表包含时机/仓位/动作/周期/退出五要素"
+      ],
+      "trigger_confidence": "medium"
+    }
+  ]
+}

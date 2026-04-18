@@ -1,20 +1,26 @@
 {
   "lastChecks": {
-    "email": null,
-    "calendar": null,
-    "weather": null
+    "email": "no_config",
+    "calendar": "no_config",
+    "weather": "2026-04-17T21:12:00Z"
   },
   "maintenance": {
-    "lastMemoryReview": "2026-04-07",
-    "lastConfigGuardianCheck": "2026-04-08T13:20:00Z"
+    "lastMemoryReview": "2026-04-13",
+    "lastDreamingCheck": "never_needed",
+    "lastConfigGuardianCheck": "2026-04-15T06:12:00Z"
   },
   "selfReflection": {
-    "lastRun": "2026-04-07"
+    "lastRun": "2026-04-16"
   },
   "selfImproving": {
-    "lastRun": "2026-04-07"
+    "lastRun": "2026-04-16"
   },
   "configBackup": {
-    "lastRun": "2026-04-08T13:20:00Z"
+    "lastRun": "2026-04-18T01:42:00Z",
+    "note": "4月18日将到期，需检查"
+  },
+  "notes": {
+    "gatewayErrLog": "2.8MB/45000行",
+    "memosStatus": "✅ 运行中"
   }
 }

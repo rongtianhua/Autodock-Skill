@@ -75,6 +75,50 @@ Before any non-trivial task:
 - `trash` > `rm` (recoverable beats gone forever)
 - When in doubt, ask.
 
+## Destructive Operations Protocol (2026-04-08)
+
+### Check ≠ Fix Rule
+**User says "检查" (check) → Only check, report, and ask before fixing**
+
+```
+User: "检查一下飞书连接"
+❌ Wrong: 立即重启网关
+✅ Right: 检查状态 → 报告发现 → 询问"是否修复？"
+```
+
+### Pre-Restart Safety Checklist
+**Before ANY gateway/channel restart:**
+
+1. **Check active tasks:**
+   ```bash
+   ~/.openclaw/workspace/skills/config-guardian/scripts/check-active-tasks.sh
+   ```
+   - If active tasks found → **STOP and ask user**
+
+2. **Assess impact (if config change):**
+   ```bash
+   ~/.openclaw/workspace/skills/config-guardian/scripts/assess-config-impact.sh <paths>
+   ```
+   - If "high impact" + active tasks → **MUST ask for confirmation**
+
+3. **Wait or confirm:**
+   - "发现 X 个活跃任务，是否等待完成后再重启？"
+   - "配置变更需要重启网关，是否继续？"
+
+### Understanding Levels
+| User Request | Your Action |
+|-------------|-------------|
+| "检查..." | 检查 → 报告 → 询问是否修复 |
+| "修复..." / "解决..." | 修复，但仍需检查活跃任务 |
+| "重启..." | 检查活跃任务 → 确认 → 执行 |
+| "帮我配置..." (长任务) | 开始前提醒可能耗时 → 执行中不中断 |
+
+### Never Assume
+- Never assume "check" means "fix now"
+- Never restart gateway without checking active tasks
+- Never perform destructive operation without explicit confirmation
+- When uncertain: **ask, don't guess**
+
 ## External vs Internal
 
 **Safe to do freely:**

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "memos-memory-guide": {
+      "source": "memos-local-openclaw-plugin",
+      "sourceType": "plugin",
+      "computedHash": ""
+    }
+  }
+}

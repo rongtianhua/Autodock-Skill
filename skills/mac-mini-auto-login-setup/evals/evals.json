@@ -1,0 +1,49 @@
+{
+  "skill_name": "mac-mini-auto-login-setup",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "帮我配置 Mac mini 的开机自动登录，用户名是 allenrong，重启后想跳过锁屏直接进桌面",
+      "expectations": [
+        "执行命令：sudo defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser -string \"allenrong\"",
+        "提供验证命令：sudo defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser",
+        "说明安全风险：开启后物理接触机器的人可直接进入系统"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 2,
+      "prompt": "我的mac经常重启后要重新点一下才能进去，有办法自动登录吗？顺便把sudo免密也配一下，我用的是 allenrong 这个账号",
+      "expectations": [
+        "提供开机自动登录配置方法（defaults write loginwindow plist）",
+        "提供 sudo 免密配置方法（visudo 添加 NOPASSWD）",
+        "提供验证命令确认配置成功",
+        "提醒物理访问安全风险"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 3,
+      "prompt": "写了个自动化脚本需要频繁调用 sudo，每次都弹密码很烦，能不能把密码存到 Keychain 里让脚本自己读？账号是 allenrong，服务名就叫 Mac sudo",
+      "expectations": [
+        "提供首次存储命令：security add-generic-password -a allenrong -s \"Mac sudo\" -w '密码' -U",
+        "提供读取命令：security find-generic-password -a allenrong -s \"Mac sudo\" -w",
+        "提醒 Keychain 用登录密码加密，建议定期更换密码",
+        "说明单引号包裹密码避免特殊字符解析"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 4,
+      "prompt": "OpenClaw 又离线了，Mac mini 重启后卡在锁屏界面进不去系统，怎么排查问题？",
+      "expectations": [
+        "提供故障自检清单：检查网络、电源、登录状态",
+        "提供诊断命令：log show 查看内核日志检查重启原因",
+        "提供 OpenClaw 进程检查命令：ps aux | grep -i openclaw",
+        "提到可能的 fsck 磁盘检查导致延迟 2-3 分钟",
+        "提到欠压保护可能是重启根因（参考之前已解决的问题）"
+      ],
+      "trigger_confidence": "medium"
+    }
+  ]
+}

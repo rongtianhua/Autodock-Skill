@@ -1,0 +1,26 @@
+{
+  "skill_name": "fix-cron-job-failures",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "My cron job keeps failing with timeout errors. I tried increasing the timeout but it still fails. Can you help me figure out what's wrong?",
+      "expectations": [
+        "Should not immediately suggest extending timeout",
+        "Should investigate root cause beyond just timeout settings",
+        "Should check logs and execution history",
+        "Should look for patterns in failures"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 2,
+      "prompt": "My cron job shows as failed in the logs, but it actually completed successfully - I received the expected message. What's causing this mismatch?",
+      "expectations": [
+        "Should investigate discrepancy between status and actual result",
+        "Should check cron execution logic and status reporting",
+        "Should look at how the cron task determines success/failure"
+      ],
+      "trigger_confidence": "high"
+    }
+  ]
+}

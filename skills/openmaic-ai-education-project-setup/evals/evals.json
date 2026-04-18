@@ -1,0 +1,45 @@
+{
+  "skill_name": "openmaic-ai-education-project-setup",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I want to research OpenMAIC AI education project. How do I deploy it and what models should I connect? Can I combine it with OpenClaw for my child's learning?",
+      "expectations": [
+        "Explain OpenMAIC deployment methods and model connection options",
+        "Provide guidance on integrating with OpenClaw",
+        "Consider the user's child education use case"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 2,
+      "prompt": "What's the most convenient way to use OpenMAIC on an iPad? My child wants to ask questions using OpenClaw and have a virtual classroom present the answers directly.",
+      "expectations": [
+        "Provide iPad-friendly usage recommendations",
+        "Explain how OpenClaw can work with OpenMAIC presentation features",
+        "Address the child's educational use case"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 3,
+      "prompt": "How can I set up model configuration in OpenMAIC for a 10-year-old child's educational needs?",
+      "expectations": [
+        "Provide age-appropriate model configuration suggestions",
+        "Consider child-friendly content filtering",
+        "Suggest suitable AI models for young learners"
+      ],
+      "trigger_confidence": "medium"
+    },
+    {
+      "id": 4,
+      "prompt": "I'm having trouble connecting models to OpenMAIC. The documentation says to use config files but I'm confused about the structure.",
+      "expectations": [
+        "Explain the config file structure clearly",
+        "Provide troubleshooting guidance",
+        "Give specific examples of model configurations"
+      ],
+      "trigger_confidence": "high"
+    }
+  ]
+}

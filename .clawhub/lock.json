@@ -15,7 +15,7 @@
     },
     "skill-vetter": {
       "version": "1.0.0",
-      "installedAt": 1774788246236
+      "installedAt": 1776345279963
     },
     "skill-creator": {
       "version": "0.1.0",
@@ -92,6 +92,58 @@
     "find-skills-skill": {
       "version": "1.0.0",
       "installedAt": 1775119022929
+    },
+    "ac-stock-ultrashort": {
+      "version": "1.0.0",
+      "installedAt": 1775752363059
+    },
+    "pubmed-search-skill": {
+      "version": "0.1.0",
+      "installedAt": 1775997031828
+    },
+    "google-scholar-search": {
+      "version": "1.0.0",
+      "installedAt": 1775997039432
+    },
+    "academic-deep-research": {
+      "version": "1.0.0",
+      "installedAt": 1775997044424
+    },
+    "ontology": {
+      "version": "1.0.4",
+      "installedAt": 1776344747955
+    },
+    "capability-evolver-pro": {
+      "version": "1.0.2",
+      "installedAt": 1776344789760
+    },
+    "evolver-plus": {
+      "version": "1.0.2",
+      "installedAt": 1776345284807
+    },
+    "using-superpowers": {
+      "version": "0.1.0",
+      "installedAt": 1776505239844
+    },
+    "superpowers": {
+      "version": "1.0.0",
+      "installedAt": 1776505477001
+    },
+    "superpowers-cn": {
+      "version": "1.0.0",
+      "installedAt": 1776505481466
+    },
+    "openclaw-agent-browser": {
+      "version": "1.0.0",
+      "installedAt": 1776505634755
+    },
+    "agent-browser-cli": {
+      "version": "1.0.0",
+      "installedAt": 1776505639038
+    },
+    "openclaw-task-executor": {
+      "version": "1.0.0",
+      "installedAt": 1776506423537
     }
   }
 }

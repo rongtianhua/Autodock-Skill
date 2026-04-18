@@ -39,6 +39,44 @@
 - **2026-04-12: PMC PDF下载新流程** — DOI → CrossRef API → Springer直链，绕过Cloudflare；Documents/文件夹作为用户文档的默认存储位置
 - **飞书文档导出** — feishu_doc工具目前不支持export action，需手动在飞书界面导出docx
 
+## 安全实践（2026-04-18）
+- 系统密码已改用 Keychain 管理（条目名："Mac sudo"，用户：allenrong）
+- sudo NOPASSWD 已配置（/etc/sudoers.d/allenrong），无需密码即可提权
+- 绝不在聊天中明文传输密码；用 `security find-generic-password` 从 Keychain 读取
+- 新密码不再记录在 MEMORY.md 或任何明文文件
+
+## Mac mini 自我修复与稳定在线配置（2026-04-18）
+
+### 目标
+让 OpenClaw 在 Mac mini 重启后无需人工干预即可自动恢复服务。
+
+### 已完成的配置
+
+**1. 自动登录**
+- 配置：`defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser -string "allenrong"`
+- 验证：`defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser` → `allenrong`
+- 注意：FileVault 关闭时有效；突然断电后可能需等 fsck 完成后才能进入系统
+
+**2. sudo 免密提权**
+- 配置：/etc/sudoers.d/allenrong → `allenrong ALL=(ALL) NOPASSWD: ALL`
+- 验证：sudo -n id → uid=0(root)
+- Keychain 条目："Mac sudo"（用户：allenrong），用于程序化 sudo 操作
+
+**3. Keychain 管理密码**
+- 存储：`security add-generic-password -a allenrong -s "Mac sudo" -w '<password>' -U`
+- 读取：`security find-generic-password -a allenrong -s "Mac sudo" -w`
+- 应用：程序化 sudo 操作，避免明文密码出现在聊天记录
+
+**4. 系统日志监控**
+- 重启原因排查：`last reboot` / `last shutdown`
+- 电源事件：`pmset -g log`
+- 故障诊断：`/Library/Logs/DiagnosticReports/ResetCounter-*.diag`
+- Keychain 路径：Spotlight 搜索 "keychain" 或 /System/Library/CoreServices/Applications/Keychain Access.app
+
+### 已知 limitations
+- 突然断电（跳闸）后，macOS 可能触发 fsck 文件系统检查，自动登录恢复需要等检查完成
+- 电源恢复场景："在电源恢复后重启"设置可能导致循环重启，需人工介入
+
 ## Preferences
 - Use local models where possible
 - Context: workspace /Users/allenrong/.openclaw/workspace
