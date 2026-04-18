@@ -148,6 +148,18 @@
     "agent-orchestrator": {
       "version": "0.1.0",
       "installedAt": 1776507015063
+    },
+    "github-cli": {
+      "version": "1.0.0",
+      "installedAt": 1776510048612
+    },
+    "bioinformatics": {
+      "version": "1.0.0",
+      "installedAt": 1776510053250
+    },
+    "go-kegg-enrichment": {
+      "version": "1.0.0",
+      "installedAt": 1776510057960
     }
   }
 }
