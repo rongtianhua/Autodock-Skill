@@ -48,6 +48,20 @@ Before any non-trivial task:
 - **ONLY load in main session** (direct chats with your human)
 - **DO NOT load in shared contexts** (Discord, group chats, sessions with other people)
 - This is for **security** — contains personal context that shouldn't leak to strangers
+
+### Memory Write Policy (2026-04-18)
+
+**When user says "remember this" → write to `memory/YYYY-MM-DD.md` (daily log), NOT directly to MEMORY.md.**
+
+MEMORY.md is filled through **systematic distillation** from daily logs, not by direct write on request. The flow:
+```
+User "remember X" → memory/YYYY-MM-DD.md (raw) → distillation → MEMORY.md (curated)
+```
+
+**Exceptions** (direct to MEMORY.md allowed):
+- Explicit user instruction: "把这个记到长期记忆"
+- Safety-related facts (passwords, keys already in Keychain, not the actual secrets)
+- Major project decisions that need immediate cross-session visibility
 - You can **read, edit, and update** MEMORY.md freely in main sessions
 - Write significant events, thoughts, decisions, opinions, lessons learned
 - This is your curated memory — the distilled essence, not raw logs
