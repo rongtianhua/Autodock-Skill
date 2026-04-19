@@ -1,0 +1,55 @@
+{
+  "skill_name": "chrome-memory-check",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Chrome 为什么占用这么多内存？连网页都没打开就占 2GB",
+      "expectations": [
+        "解释多进程架构",
+        "提供内存查看命令",
+        "给出优化建议"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 2,
+      "prompt": "帮我检查一下 Chrome 的内存使用情况",
+      "expectations": [
+        "列出 Chrome 相关进程",
+        "按内存占用排序",
+        "显示每个进程的内存使用量"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 3,
+      "prompt": "Chrome 内存占用太高了，怎么优化？",
+      "expectations": [
+        "识别高内存占用的原因",
+        "建议启用内存节省模式",
+        "建议禁用冗余扩展"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 4,
+      "prompt": "我的 Chrome 开了很多标签页导致内存爆了",
+      "expectations": [
+        "解释标签页与内存关系",
+        "建议使用内存节省程序",
+        "建议定期关闭不活跃标签"
+      ],
+      "trigger_confidence": "medium"
+    },
+    {
+      "id": 5,
+      "prompt": "Chrome 比 Firefox 内存占用大很多，正常吗？",
+      "expectations": [
+        "解释 Chrome 多进程架构",
+        "说明这是设计差异不是 bug",
+        "提供优化建议"
+      ],
+      "trigger_confidence": "medium"
+    }
+  ]
+}

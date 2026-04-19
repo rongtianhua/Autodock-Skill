@@ -1,0 +1,95 @@
+{
+  "skill_name": "mac-memory-optimization-ollama-docker",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "我的 Mac mini 16GB 内存快满了，Docker Desktop 感觉占了很多，怎么清理多余进程？",
+      "expectations": [
+        "执行 ps aux --sort=-%mem | head -20 检查内存占用最高的进程",
+        "识别 limactl hostagent 进程并判断是 Docker Desktop 还是 Colima",
+        "提供清理 Docker Desktop Lima VM 的步骤（sudo kill -9）",
+        "提醒先确认不是 Colima 的进程"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 2,
+      "prompt": "limactl hostagent 进程杀不掉，ps 看到 PPID=1，普通 kill -9 都没用是怎么回事？",
+      "expectations": [
+        "解释 PPID=1 意味着进程由 launchd 托管",
+        "说明普通 kill 信号被忽略的原因",
+        "提供 sudo kill -9 <PID> 强制终止方案",
+        "警告误杀 Colima 的后果"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 3,
+      "prompt": "想用 Colima 替代 Docker Desktop 节省内存，我的项目是 ~/projects/genomics-pipeline，迁移步骤是什么？",
+      "expectations": [
+        "解释 Colima vs Docker Desktop 的内存占用差异（~200MB vs ~2GB+）",
+        "提供 Colima 安装和启动命令（colima start）",
+        "说明 Docker context 切换命令（docker context use colima）",
+        "提醒清理原有 Docker Desktop 进程"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 4,
+      "prompt": "运行 ClawBio 甲基化时钟测试时报错：docker context 已经指向 colima 但还是连不上，命令是 /Users/memou/.openclaw-agents/clawbio/venv/bin/python /Users/memou/.openclaw-agents/clawbio/skills/epigenetic-age/run.py --input /Users/memou/test_bio_sample.csv",
+      "expectations": [
+        "检查 Colima 服务状态（colima status）",
+        "诊断 Docker context 配置",
+        "提供 docker context use colima 修正命令",
+        "说明 ClawBio 本地运行不需要 Docker 容器"
+      ],
+      "trigger_confidence": "medium"
+    },
+    {
+      "id": 5,
+      "prompt": "不小心把 ollama 的 kimi-k2.5:cloud 模型删了，这个怎么恢复？",
+      "expectations": [
+        "解释云端模型（kimi-k2.5:cloud）不占本地存储但需要保留注册信息",
+        "提供 ollama pull 命令恢复模型",
+        "建议先列出现有模型确认状态（ollama list）",
+        "提醒删除前应二次确认"
+      ],
+      "trigger_confidence": "medium"
+    },
+    {
+      "id": 6,
+      "prompt": "Mac mini 内存从 260MB 优化到 4GB+ 的具体步骤是什么？需要运行 ClawBio 的全基因组分析",
+      "expectations": [
+        "检查当前内存占用最高的进程",
+        "区分 Docker Desktop 和 Colima 进程",
+        "提供清理 Docker Desktop Lima VM 的具体命令",
+        "说明 Ollama 模型管理（删除不需要的模型）",
+        "确认 ClawBio 本地 Python 环境可用"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 7,
+      "prompt": "docker desktop 和 colima 都用的 limactl，怎么区分哪个进程是谁的？",
+      "expectations": [
+        "说明两个服务都用 Lima 作为底层",
+        "解释如何通过 ps aux | grep limactl 看完整命令行",
+        "指出 docker-desktop-linux 开头的是 Docker Desktop",
+        "指出 colima 开头的是 Colima",
+        "强调误杀 Colima 需要 colima start 恢复"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 8,
+      "prompt": "启动 colima 后 docker ps 还是报错连不上，怎么破？",
+      "expectations": [
+        "诊断 Docker context 可能指向了 Docker Desktop",
+        "执行 docker context ls 查看当前 context",
+        "提供 docker context use colima 切换命令",
+        "确认 Colima daemon 运行状态"
+      ],
+      "trigger_confidence": "medium"
+    }
+  ]
+}

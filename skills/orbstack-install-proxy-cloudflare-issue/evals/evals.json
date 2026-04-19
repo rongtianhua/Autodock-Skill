@@ -1,0 +1,49 @@
+{
+  "skill_name": "orbstack-install-proxy-cloudflare-issue",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "我在 Mac mini 上安装 OrbStack 一直失败，执行 brew install orbstack 报错 SSL_ERROR_SYSCALL，试了 V2RayN 开了代理还是不行，怎么解决？",
+      "expectations": [
+        "识别为 OrbStack 下载问题，需排查 CDN 连通性",
+        "检查 SSL 握手阶段超时问题",
+        "建议使用 Colima 替代方案",
+        "解释 Cloudflare 对数据中心 IP 的阻断机制"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 2,
+      "prompt": "运行 /Users/user/clawbio/scripts/clawbio_health_check.sh 时 gwas_lookup 包导入报错 ImportError: attempted relative import with no known parent package，subprocess 里也找不到 skills 目录，帮我看看哪里配置有问题",
+      "expectations": [
+        "诊断 gwas_lookup 目录缺少 __init__.py 文件",
+        "检查 subprocess 中 PYTHONPATH 环境变量传递",
+        "修复相对导入语法错误",
+        "验证所有 skills 的包结构完整性"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 3,
+      "prompt": "methylation-clock 跑不起来，看日志说是权限问题？脚本里写的 #!/usr/bin/python 是不是有问题，我用的是 miniconda3 的 pyaging 环境",
+      "expectations": [
+        "检查 methylation_clock.py 的 shebang 配置",
+        "确认 pyaging 环境的 Python 路径",
+        "验证文件执行权限 chmod +x",
+        "提供修复后的 shebang: #!/Users/user/miniconda3/envs/pyaging/bin/python"
+      ],
+      "trigger_confidence": "medium"
+    },
+    {
+      "id": 4,
+      "prompt": "clwbio framework 的 demo 模式突然不 work 了，Genome Compare 和 BigQuery Bridge 报错说找不到模块，之前还好好的，昨天更新了 conda 环境后就这样了",
+      "expectations": [
+        "排查 conda 环境变更导致的依赖冲突",
+        "检查 site-packages 路径是否正确",
+        "验证 8 个 skills 的 demo 验证结果",
+        "确认 PYTHONPATH 中包含 skills 和 references 目录"
+      ],
+      "trigger_confidence": "medium"
+    }
+  ]
+}
