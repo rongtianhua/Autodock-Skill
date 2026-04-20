@@ -1,0 +1,47 @@
+{
+  "skill_name": "memos-dreaming-cron-fix-proxy-debug",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "memos-dreaming 的定时任务又报错了，看日志显示一直是 dry run 模式，但我明明在 cron 里配了 --apply 参数，为什么 MEMORY.md 还是没有更新？帮我排查一下",
+      "expectations": [
+        "检查 scripts/memos_dreaming_cron.py 入口脚本是否存在 dry_run 逻辑问题",
+        "识别 cron 调用时 args.apply 为 False 导致 dry_run=True 的根因",
+        "验证修复方案：新建 memos_dreaming_cron.py 默认加载 --apply 参数",
+        "确认新的 cron trigger ID: 69b54256-6f88-482a-9b73-67713af130db"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 2,
+      "prompt": "brew.sh 和 orbstack.dev 用代理访问一直超时，直连又很快，但是 GitHub 和 OpenAI 走代理正常。之前加过绕行规则但不确定是否生效，帮我看看 proxy-cdn-routing-troubleshooting.md 这个文档里有没有相关记录",
+      "expectations": [
+        "引用 references/proxy-cdn-routing-troubleshooting.md 确认路由链路分析",
+        "解释 ISP SOCKS5 代理到 CDN 边缘节点路由质量差的问题",
+        "验证当前代理出口 IP: 65.195.107.245 (AS701 Verizon Business)",
+        "确认 orbstack.dev 和 brew.sh 绕行规则的必要性"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 3,
+      "prompt": "cron状态显示delivered但飞书收不到通知，trigger ID是69b54256-6f88-482a-9b73-67713af130db，是不是飞书channel的问题啊？还是说心跳频道不支持",
+      "expectations": [
+        "确认飞书推送失败原因是 cron delivery 缺少 --to 参数",
+        "验证修复后 Status: ok, Delivery: delivered",
+        "关联 memos-dreaming cron debug 相关修复记录"
+      ],
+      "trigger_confidence": "medium"
+    },
+    {
+      "id": 4,
+      "prompt": "帮我评估一下 MaiHHConnect/MHH-Causality-Memory 这个项目能不能集成到我们的 skill 系统里，看它 star 才 1 个，是 4 月中才创建的，担心没经过社区验证",
+      "expectations": [
+        "输出 CausaMem 项目评估结论：过新，无社区验证，star 关注即可，暂不集成",
+        "说明四层结构（事件→时间线→关系链→抽象）+ 13维因果推理的技术特点",
+        "提供明确的集成建议：不建议现在集成"
+      ],
+      "trigger_confidence": "medium"
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "skill_name": "r-base-vs-homebrew-r",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "conda里的r-base是什么意思？和普通R有什么关系？",
+      "expectations": [
+        "解释r-base是conda生态中R的发行版包名",
+        "区分conda安装的R和系统/其他方式安装的R",
+        "提到conda base环境中R的版本信息"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 2,
+      "prompt": "我电脑上有Homebrew装的R和conda的r-base，它们是同一套吗？",
+      "expectations": [
+        "说明两套R是完全独立的安装",
+        "解释包和环境不互通",
+        "可能建议用户确认主要使用哪一套"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 3,
+      "prompt": "conda base环境里的R版本是多少？装了哪些R包？",
+      "expectations": [
+        "提到conda base中R的具体版本",
+        "说明预装的基础R包数量或类型",
+        "区分conda R包和系统R包"
+      ],
+      "trigger_confidence": "medium"
+    }
+  ]
+}

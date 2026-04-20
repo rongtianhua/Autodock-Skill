@@ -1,0 +1,49 @@
+{
+  "skill_name": "R环境配置与生信包安装",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "I'm getting Java-related errors when trying to install R packages like rJava on my Mac. The error says 'configure: error: Java Development Framework not found'. How do I fix this?",
+      "expectations": [
+        "Diagnose Java/JDK installation status",
+        "Check if R can find Java using R CMD javaconf",
+        "Guide through setting JAVA_HOME environment variable",
+        "Verify Java configuration for R"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 2,
+      "prompt": "I'm trying to install the bibliometrix package in R but it fails with dependency errors. I'm using conda R on macOS. What should I do?",
+      "expectations": [
+        "Identify conda R limitations with binary packages",
+        "Explain the advantages of using Homebrew R over conda R",
+        "Guide through switching to Homebrew R installation",
+        "Demonstrate successful package installation in Homebrew R"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 3,
+      "prompt": "I'm getting 'ld: library not found for -lgfortran' error when installing R packages on my MacBook Pro. How do I resolve this Fortran library dependency issue?",
+      "expectations": [
+        "Diagnose missing gfortran library",
+        "Guide through installing gfortran via Homebrew",
+        "Verify library linkage configuration",
+        "Ensure package compilation succeeds after fix"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 4,
+      "prompt": "What's the best way to set up R for bioinformatics data analysis on macOS? Should I use conda or Homebrew?",
+      "expectations": [
+        "Compare conda R vs Homebrew R for bioinformatics use",
+        "Recommend Homebrew R as the preferred option",
+        "Explain why conda R has limitations with binary packages",
+        "Provide installation and configuration guidance"
+      ],
+      "trigger_confidence": "medium"
+    }
+  ]
+}

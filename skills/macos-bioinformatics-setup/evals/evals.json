@@ -1,0 +1,49 @@
+{
+  "skill_name": "macos-bioinformatics-setup",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "刚入手了 Mac mini M2 Pro，想装生信分析环境。按照网上教程装了 miniconda，但 conda install samtools 一直报错：'PackagesNotFoundError: The following packages are not available from current channels: samtools'。之前在 ~/miniconda3 和 /opt/homebrew/Caskroom/miniconda 下都装过，which conda 显示 /opt/homebrew/bin/conda。请问怎么清理干净后正确配置 conda 环境？",
+      "expectations": [
+        "引导用户检查并清理残留的 ~/miniconda3 目录，只保留 Caskroom 版本",
+        "提供 .condarc 配置（channels: conda-forge, bioconda, defaults; channel_priority: strict）",
+        "建议安装 mamba 加速工具链",
+        "给出 samtools 等核心工具的安装命令"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 2,
+      "prompt": "我在用 conda 装 cnvkit 和 manta 的时候一直装不上，错误信息是 'UnsatisfiableError: The following specifications were found to be incompatible'。看日志是因为 osx-arm64 架构没有对应的构建。我看 skill 里提到可以用 Docker 补齐，但不知道具体怎么操作。Mac mini 用的是 OrbStack，不是 Docker Desktop。能不能帮我配置一下这些工具的快捷命令？",
+      "expectations": [
+        "推荐使用 docker pull 获取 cnvkit、manta 的镜像（优先 arm64 原生镜像）",
+        "指导创建 ~/bin/ 下的快捷脚本（cnvkit.py、manta 等）",
+        "确认 OrbStack 的 Docker context 设置正确（docker context use orbstack）",
+        "说明 BUSCO 的 Docker 容器化方案"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 3,
+      "prompt": "R studio 里 install.packages(c('rJava', 'xlsxjars')) 报错：'Java configuration error. JAVA_HOME cannot be determined'。我已经 brew install openjdk 了，但 R 好像还是找不到 Java。我用的是 Apple Silicon Mac，R 4.3.2 从 Homebrew 安装的。请问怎么解决这个问题？顺便问一下，ggpubr、survminer、gtsummary 这些包能直接装吗？",
+      "expectations": [
+        "提供 R CMD javareconf 命令刷新 Java 配置",
+        "说明在 ~/.R/Makevars 或环境变量中设置 JAVA_HOME 的方法",
+        "给出 rJava 安装成功后的验证方法",
+        "列出 ggplot2、ggpubr、survminer、gtsummary 等发表级 R 包的安装命令"
+      ],
+      "trigger_confidence": "high"
+    },
+    {
+      "id": 4,
+      "prompt": "我电脑上有好多 conda 环境，conda env list 显示 base、py38、r_env、tobias 等七八个。但我自己都记不清哪个是干嘛的了，而且每次打开终端都自动进 base 很烦。有没有办法整理一下，另外 tobias 这个环境一直报 'Python 3.13 不兼容' 的错，我应该怎么办？",
+      "expectations": [
+        "建议关闭 base 自动激活（conda config --set auto_activate_base false）",
+        "指导用户梳理并清理不需要的 conda 环境（conda env remove）",
+        "为 tobias 创建独立的 Python 3.12 环境（conda create -n tobias python=3.12）",
+        "说明 deeptools 等工具也需要独立环境的原因"
+      ],
+      "trigger_confidence": "medium"
+    }
+  ]
+}
