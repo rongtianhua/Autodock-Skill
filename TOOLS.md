@@ -287,3 +287,142 @@ docker run --rm etal/cnvkit cnvkit.py batch --help
 5. **Cron**: 用 `openclaw cron list` 导出所有任务配置，重建
 6. **Gateway**: 迁移 `~/.openclaw/openclaw.json`
 
+---
+
+## Skill 安装 SOP（from AGENTS.md）
+
+**装完即跑，是唯一验收标准。**
+
+1. **下载文件** → 放入 `~/.openclaw/workspace/skills/<skill-name>/`
+2. **安装依赖** → `pip install` / 检查 requirements.txt
+3. **初始化配置** → 创建 SKILL.md 要求的目录结构、配置文件
+4. **设置心跳（如适用）** → 写入 HEARTBEAT.md，设置执行间隔
+5. **端到端验证** → 实际跑一个用例，不能只说"下载成功"
+
+**红线：**
+- ❌ 只下载 skill 文件，不做配置
+- ❌ 安装失败跳过，不告知用户
+- ❌ 自测不过就放弃，不排查
+
+**已知已安装待激活的 skill：**
+- `Proactive-Agent` → `~/proactivity/notes/areas/` 三个文件
+- `agent-autonomy-kit` → `~/tasks/QUEUE.md`
+- `evolver-plus` → `~/viking-global/evolver/` 目录结构
+- `capability-evolver-pro` → 直接 invoke 使用
+
+### Skill 安装前：必须 Vet（skill-vetter）
+
+**安装任何 skill 之前（包括 ClawHub/GitHub、或其他来源），必须先 invoke `skill-vetter` 进行安全审查。**
+
+**审查流程：**
+1. Source Check — 作者/来源/下载量/更新时间
+2. Code Review — 扫描 red flags（curl外发/凭证访问/eval/加密代码等）
+3. Permission Scope — 文件读写/网络/命令范围
+4. Risk Classification — 🟢LOW / 🟡MEDIUM / 🔴HIGH / ⛔EXTREME
+
+**红线（发现直接拒绝安装）：**
+- 请求凭证/API密钥
+- 读取 ~/.ssh/.aws/.config
+- curl/wget 到未知 URL
+- base64 decode + eval
+- 修改系统文件
+
+**输出格式：** 按 skill-vetter 规定的 VETTING REPORT 格式输出结论。
+
+---
+
+## Hindsight 记忆 Hook（from AGENTS.md）
+
+Hindsight 是我们的长期记忆系统，与 MemOS 互补。MemOS 精于对话检索，Hindsight 长于学习演化。
+
+### 何时调用
+
+| 场景 | 操作 | 调用方式 |
+|------|------|---------|
+| Session 启动（读 memory/ 后） | `recall` | recall 最近项目状态、用户偏好 |
+| 发现重要决策/偏好（WAL 条目出现时）| `retain` | 立即写入，不等 session 结束 |
+| Heartbeat 例行检查 | `sync-recent` | 同步 memory/ 文件中的 WAL 条目 |
+| 用户问"上次说..."或"我们的决定是..." | `reflect` | 让 Hindsight 推理回答 |
+
+### 调用命令
+
+```bash
+# 搜索记忆
+bash ~/.openclaw/workspace/skills/hindsight/hook.sh recall "用户的项目偏好"
+
+# 存入重要记忆
+bash ~/.openclaw/workspace/skills/hindsight/hook.sh retain "用户选择了 rnaseq-pipeline 环境做 WGS 分析" "user-decision"
+
+# 让 Hindsight 综合回答
+bash ~/.openclaw/workspace/skills/hindsight/hook.sh reflect "Allen 的技术背景和当前项目状态"
+
+# 检查服务状态
+bash ~/.openclaw/workspace/skills/hindsight/hook.sh status
+
+# Heartbeat 时同步 WAL 条目
+python3 ~/.openclaw/workspace/skills/hindsight/sync.py sync-recent
+```
+
+### 记忆银行
+
+- **Bank ID**: `openclaw-main`
+- **配置**: retain_mission（提取技术决策、用户偏好、项目状态）和 disposition（skepticism/literalism/empathy=3）
+- **端点**: `http://localhost:8888`
+
+### 与 MemOS 的分工
+
+- **MemOS**: 快速检索、对话历史、短期上下文
+- **Hindsight**: 事实提取、观察体合并、长期学习、系统性知识
+
+---
+
+## External vs Internal（from AGENTS.md）
+
+**Safe to do freely：**
+- Read files, explore, organize, learn
+- Search the web, check calendars
+- Work within this workspace
+
+**Ask first：**
+- Sending emails, tweets, public posts
+- Anything that leaves the machine
+- Anything you're uncertain about
+
+---
+
+## Platform Formatting（from AGENTS.md）
+
+- **Discord/WhatsApp:** No markdown tables! Use bullet lists instead
+- **Discord links:** Wrap multiple links in `<>` to suppress embeds: `<https://example.com>`
+- **WhatsApp:** No headers — use **bold** or CAPS for emphasis
+
+---
+
+## Group Chats（from AGENTS.md，完整规范见 SOUL.md）
+
+### Know When to Speak!
+
+**Respond when:**
+- Directly mentioned or asked a question
+- You can add genuine value (info, insight, help)
+- Something witty/funny fits naturally
+- Correcting important misinformation
+- Summarizing when asked
+
+**Stay silent when:**
+- It's just casual banter between humans
+- Someone already answered the question
+- Your response would just be "yeah" or "nice"
+- The conversation is flowing fine without you
+
+**React when:**
+- You appreciate something but don't need to reply (👍, ❤️, 🙌)
+- Something made you laugh (😂, 💀)
+- You find it interesting or thought-provoking (🤔, 💡)
+- You want to acknowledge without interrupting the flow
+
+**Don't overdo it:** One reaction per message max. Pick the one that fits best.
+
+Participate, don't dominate.
+
+
