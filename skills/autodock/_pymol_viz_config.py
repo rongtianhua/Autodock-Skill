@@ -533,7 +533,11 @@ def apply_cartoon(cmd, preset='PUBLICATION'):
         'POCKET': CARTOON_POCKET,
         'INTERACTION': CARTOON_INTERACTION,
     }
-    params = table.get(preset, CARTOON_PUBLICATION)
+    # Allow preset to be a dict (inline override) or a string key
+    if isinstance(preset, dict):
+        params = preset
+    else:
+        params = table.get(preset, CARTOON_PUBLICATION)
     for key, val in params.items():
         try:
             cmd.set(key, val)

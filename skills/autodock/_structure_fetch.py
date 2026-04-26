@@ -107,7 +107,7 @@ def fetch_protein_swissmodel(uniprot_id: str, output_path: str = None) -> str:
     """
     uniprot_id = uniprot_id.upper()
     # SWISS-MODEL API to get best model
-    api_url = f"https://swissmodel.expasy.org/api/repository/uniprot/{uniprot_id}"
+    api_url = f"https://swissmodel.expasy.org/repository/uniprot/{uniprot_id}.json"
     model_url = None
 
     try:
@@ -117,9 +117,9 @@ def fetch_protein_swissmodel(uniprot_id: str, output_path: str = None) -> str:
             data = json.loads(resp.read())
             results = data.get('result', {}).get('structures', [])
             if results:
-                # Get the first/best model
+                # Get the first/best model — use 'coordinates' field for .pdb URL
                 best = results[0]
-                model_url = best.get('pdb_url')
+                model_url = best.get('coordinates')
     except Exception as e:
         raise ValueError(f"SWISS-MODEL lookup failed: {e}")
 
@@ -149,8 +149,9 @@ def fetch_protein_pdb_redo(pdb_id: str, output_path: str = None) -> str:
         Path to downloaded PDB file
     """
     pdb_id = pdb_id.upper()
-    # PDBredo re-refined version
-    url = f"https://www.pdbredo.central.ebi.ac.uk/c/up/{pdb_id}/full"
+    # PDB-REDO Databank at pdb-redo.eu — free, no auth
+    # Format: https://pdb-redo.eu/db/{pdb_id_lower}/{pdb_id_lower}_final.pdb
+    url = f"https://pdb-redo.eu/db/{pdb_id.lower()}/{pdb_id.lower()}_final.pdb"
     dest = output_path or f"./structures/{pdb_id}_redo.pdb"
 
     os.makedirs(os.path.dirname(dest) or '.', exist_ok=True)
@@ -169,32 +170,83 @@ def fetch_protein_pdb_redo(pdb_id: str, output_path: str = None) -> str:
 
 def fetch_protein(pdb_id: str = None,
                   uniprot_id: str = None,
-                  source: str = 'pdb',
+                  source: str = 'auto',
                   output_dir: str = "./structures") -> str:
     """
-    Unified protein structure fetch.
+    Unified protein structure fetch with automatic fallback chain.
+
+    Priority: RCSB PDB → PDB-REDO → AlphaFold → SwissModel
 
     Args:
-        pdb_id: RCSB PDB ID (4 chars)
-        uniprot_id: UniProt accession
-        source: 'pdb' | 'alphafold' | 'swissmodel' | 'pdbredo'
-        output_dir: Directory to save structure
+        pdb_id:      RCSB PDB ID (4 chars). If provided, starts from PDB.
+        uniprot_id:  UniProt accession (e.g. 'Q9H825'). Used when pdb_id not given.
+        source:      'pdb' | 'alphafold' | 'swissmodel' | 'pdbredo' | 'auto'
+                     'auto' (default): follows the fallback chain above.
+        output_dir:  Directory to save structure
 
     Returns:
         Path to downloaded PDB file
+
+    Raises:
+        ValueError: If all sources fail
     """
     os.makedirs(output_dir, exist_ok=True)
 
-    if source == 'pdb' and pdb_id:
-        return fetch_protein_pdb(pdb_id)
-    elif source == 'alphafold' and uniprot_id:
-        return fetch_protein_alphafold(uniprot_id)
-    elif source == 'swissmodel' and uniprot_id:
-        return fetch_protein_swissmodel(uniprot_id)
-    elif source == 'pdbredo' and pdb_id:
-        return fetch_protein_pdb_redo(pdb_id)
+    # Build output path
+    def out_path(name):
+        return os.path.join(output_dir, f"{name}.pdb")
+
+    # ── Explicit source selection ─────────────────────────────────────
+    if source != 'auto':
+        if source == 'pdb' and pdb_id:
+            return fetch_protein_pdb(pdb_id, out_path(pdb_id))
+        elif source == 'pdbredo' and pdb_id:
+            return fetch_protein_pdb_redo(pdb_id, out_path(f"{pdb_id}_redo"))
+        elif source == 'alphafold' and uniprot_id:
+            return fetch_protein_alphafold(uniprot_id, out_path(f"AF-{uniprot_id}"))
+        elif source == 'swissmodel' and uniprot_id:
+            return fetch_protein_swissmodel(uniprot_id, out_path(f"{uniprot_id}_swissmodel"))
+        else:
+            raise ValueError(
+                f"source='{source}' requires pdb_id (for pdb/pdbredo) or "
+                f"uniprot_id (for alphafold/swissmodel)"
+            )
+
+    # ── Auto fallback chain ────────────────────────────────────────────
+    if pdb_id:
+        pdb_id = pdb_id.upper()
+        try:
+            return fetch_protein_pdb(pdb_id, out_path(pdb_id))
+        except Exception as e:
+            print(f"[fetch_protein] PDB failed ({e}), trying PDB-REDO...")
+            try:
+                return fetch_protein_pdb_redo(pdb_id, out_path(f"{pdb_id}_redo"))
+            except Exception:
+                pass
+        # Fall through to AlphaFold if PDB both fail
+        if uniprot_id:
+            print(f"[fetch_protein] PDB/PDBREDO failed, falling back to AlphaFold...")
+            return fetch_protein_alphafold(uniprot_id, out_path(f"AF-{uniprot_id}"))
+        raise ValueError(f"All PDB sources failed for: {pdb_id}")
+
+    elif uniprot_id:
+        uniprot_id = uniprot_id.upper()
+        tried = []
+        for src_name, src_fn, path_fn in [
+            ('AlphaFold',  fetch_protein_alphafold,  lambda uid: out_path(f"AF-{uid}")),
+            ('SwissModel', fetch_protein_swissmodel, lambda uid: out_path(f"{uid}_swissmodel")),
+        ]:
+            try:
+                return src_fn(uniprot_id, path_fn(uniprot_id))
+            except Exception as e:
+                print(f"[fetch_protein] {src_name} failed ({e})")
+                tried.append(src_name)
+                continue
+        raise ValueError(f"All sources failed for UniProt {uniprot_id}: {tried}")
+
     else:
-        raise ValueError("Provide pdb_id (for PDB/pdbredo) or uniprot_id (for AlphaFold/swissmodel)")
+        raise ValueError("fetch_protein requires pdb_id or uniprot_id")
+
 
 
 # ─── Small Molecule Sources ───────────────────────────────────────────────────
@@ -332,50 +384,6 @@ def fetch_molecule_drugbank(drugbank_id: str = None,
         raise ValueError("Provide drugbank_id or drug_name")
 
 
-def fetch_molecule_zinc(zinc_id: str, output_smi: str = None) -> dict:
-    """
-    Fetch compound from ZINC database.
-
-    Args:
-        zinc_id: ZINC ID (e.g. 'ZINC00000001')
-        output_smi: Optional path to save SMILES file
-
-    Returns:
-        dict with keys: zinc_id, smiles, smiles_url
-    """
-    zinc_id = zinc_id.upper()
-    if not zinc_id.startswith('ZINC'):
-        zinc_id = f'ZINC{zinc_id:010d}'  # pad to 10 digits
-
-    # ZINC20 API
-    url = f"https://zinc20.docking.org/substances/{zinc_id}/"
-
-    try:
-        req = urllib.request.Request(url, headers={'Accept': 'text/plain'})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            smiles = resp.read().decode().strip()
-
-        if not smiles or len(smiles) > 1000:
-            raise ValueError(f"ZINC fetch returned invalid data for: {zinc_id}")
-
-        result = {
-            'zinc_id': zinc_id,
-            'smiles': smiles,
-        }
-
-        if output_smi:
-            with open(output_smi, 'w') as f:
-                f.write(smiles)
-            result['smiles_path'] = output_smi
-
-        print(f"[structure_fetch] ZINC: {zinc_id} — {smiles[:50]}...")
-        return result
-
-    except urllib.error.HTTPError as e:
-        raise ValueError(f"ZINC entry not found: {zinc_id} (HTTP {e.code})")
-    except Exception as e:
-        raise ValueError(f"ZINC error: {e}")
-
 
 def fetch_molecule(identifier: str,
                    source: str = 'pubchem',
@@ -386,7 +394,7 @@ def fetch_molecule(identifier: str,
 
     Args:
         identifier: Compound name, SMILES, ID, etc.
-        source: 'pubchem' | 'chembl' | 'zinc'
+        source: 'pubchem' | 'chembl' | 'cactus'
         identifier_type: 'name' | 'smiles' | 'inchi' | 'cid' (for pubchem)
         output_dir: Directory to save SDF/SMILES files
 
@@ -400,11 +408,51 @@ def fetch_molecule(identifier: str,
         return fetch_molecule_pubchem(identifier, identifier_type, output_sdf=sdf)
     elif source == 'chembl':
         return fetch_molecule_chembl(chembl_id=identifier) if identifier.startswith('CHEMBL') else fetch_molecule_chembl(molecule_name=identifier)
-    elif source == 'zinc':
-        smi = os.path.join(output_dir, f"{identifier}.smi")
-        return fetch_molecule_zinc(identifier, output_smi=smi)
+    elif source == 'cactus':
+        return fetch_molecule_cactus(identifier)
     else:
         raise ValueError(f"Unknown source: {source}")
+
+
+def fetch_molecule_cactus(identifier: str) -> dict:
+    """
+    Resolve a chemical name to SMILES via EBI OPSIN (Open Parser for Systematic
+    IUPAC Nomenclature). Best for IUPAC names; common names (caffeine, ibuprofen,
+    glucose) also accepted.
+
+    Args:
+        identifier: Chemical name (IUPAC or common, e.g. 'caffeine', 'glucose')
+
+    Returns:
+        dict with keys: name, smiles, source
+
+    Raises:
+        ValueError: if the name cannot be parsed
+    """
+    encoded = urllib.parse.quote(identifier, safe='')
+    url = f"https://www.ebi.ac.uk/opsin/ws/{encoded}.smi"
+
+    try:
+        req = urllib.request.Request(url, headers={'Accept': 'text/plain'})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            smiles = resp.read().decode().strip()
+
+        # OPSIN returns an error XML if parsing fails
+        if smiles.startswith('<?xml') or not smiles:
+            raise ValueError(f"OPSIN could not parse: {identifier}")
+        if len(smiles) > 2000:
+            raise ValueError(f"OPSIN returned invalid SMILES for: {identifier}")
+
+        print(f"[structure_fetch] OPSIN: {identifier} → {smiles[:50]}...")
+        return {
+            'name': identifier,
+            'smiles': smiles,
+            'source': 'EBI OPSIN',
+        }
+    except urllib.error.HTTPError as e:
+        raise ValueError(f"OPSIN lookup failed for '{identifier}' (HTTP {e.code})")
+    except Exception as e:
+        raise ValueError(f"OPSIN error: {e}")
 
 
 # ─── Self-test ────────────────────────────────────────────────────────────────

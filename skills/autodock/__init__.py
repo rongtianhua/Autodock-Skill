@@ -18,6 +18,35 @@ Usage:
 Environment: conda activate autodock313
 """
 
+# Import _pymol_viz_config FIRST to break circular dependency
+# (_autodock.py does: from autodock._pymol_viz_config import ...)
+from autodock._pymol_viz_config import (
+    SCENE_PRESETS,
+    get_scene_preset,
+    DASH_PRESETS,
+    DASH_COLOR_MAP,
+    STICK_PRESETS,
+    CARTOON_PUBLICATION,
+    CARTOON_POCKET,
+    CARTOON_INTERACTION,
+    PUBLICATION,
+    PUBLICATION_OUTLINE,
+    STANDARD,
+)
+
+from autodock._structure_fetch import (
+    fetch_protein,
+    fetch_protein_pdb,
+    fetch_protein_alphafold,
+    fetch_protein_swissmodel,
+    fetch_protein_pdb_redo,
+    fetch_molecule,
+    fetch_molecule_pubchem,
+    fetch_molecule_chembl,
+    fetch_molecule_cactus,
+    fetch_molecule_drugbank,
+)
+
 from autodock._autodock import (
     # Docking
     prepare_receptor,
@@ -35,32 +64,6 @@ from autodock._autodock import (
     render_interactions_pymol,
     render_ligand_2d,
     composite_summary,
-)
-
-from autodock._structure_fetch import (
-    fetch_protein,
-    fetch_protein_pdb,
-    fetch_protein_alphafold,
-    fetch_protein_swissmodel,
-    fetch_protein_pdb_redo,
-    fetch_molecule,
-    fetch_molecule_pubchem,
-    fetch_molecule_chembl,
-    fetch_molecule_zinc,
-)
-
-from autodock._pymol_viz_config import (
-    SCENE_PRESETS,
-    get_scene_preset,
-    DASH_PRESETS,
-    DASH_COLOR_MAP,
-    STICK_PRESETS,
-    CARTOON_PUBLICATION,
-    CARTOON_POCKET,
-    CARTOON_INTERACTION,
-    PUBLICATION,
-    PUBLICATION_OUTLINE,
-    STANDARD,
 )
 
 __all__ = [
@@ -89,7 +92,8 @@ __all__ = [
     'fetch_molecule',
     'fetch_molecule_pubchem',
     'fetch_molecule_chembl',
-    'fetch_molecule_zinc',
+    'fetch_molecule_cactus',
+    'fetch_molecule_drugbank',
     # Scene presets
     'SCENE_PRESETS',
     'get_scene_preset',

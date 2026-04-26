@@ -3,7 +3,7 @@ name: autodock-molecular-docking
 description: |
   蛋白质与小分子药物的分子对接分析。
   AutoDock Vina 对接 + RDKit 相互作用检测 + PyMOL 可视化。
-  支持 5 种 Publication-quality 渲染场景（complex / pocket / interaction / electrostatic / ligand_closeup）。
+  支持 4 种 Publication-quality 渲染场景（complex / pocket / interaction / ligand_closeup）+ 综合四宫格拼接。
   基于 PyMOL 官方文档 / Leipzig 教程 / OPIG 最佳实践 / CB-Dock2 论文 调研优化（2026-04-25）。
 tool_type: python
 primary_tool: vina
@@ -157,6 +157,8 @@ render_pocket(
 
 ## render_interactions_pymol — 相互作用标注图
 
+**（推荐使用，已固化 Leipzig 标准 + 配体质心法，2026-04-25 实测验证）**
+
 ```python
 render_interactions_pymol(
     receptor_pdb="protein.pdb",
@@ -170,15 +172,44 @@ render_interactions_pymol(
 )
 ```
 
-**Leipzig 标准虚线参数（应用在此函数中）：**
+**核心修复（2026-04-25）：PyMOL mode=0 虚线爆炸 → 配体质心法**
+
+| 问题 | 原因 | 修复 |
+|------|------|------|
+| 疏水虚线数百条（应为 7 条）| PyMOL `mode=0` 对 `byres CA → ligand atoms` 产生 N×M 组合 | 改用配体质心 pseudoatom（`lig_cent`），每残基仅 1 条虚线 |
+| cutoff=5.0 无法激活虚线 | PyMOL centroid 模式 cutoff 行为特殊，需 >9.5 Å | cutoff=10.0 |
+| 残基标签重叠 | 动态标签自动排列差 | Hydrophobic 残基用橙色 sticks + CA 原子白标，H-bond/π-π 用 CA 标签 |
+
+**Leipzig 标准虚线参数：**
 
 | 参数 | Leipzig 标准值 | 说明 |
 |------|--------------|------|
 | `dash_gap` | 0.4 | 虚线间隙 |
 | `dash_radius` | 0.05 | 虚线圆柱半径 |
-| `dash_length` | 0.3 | 每段虚线长度 |
+| `dash_length` | 0.3（疏水 0.25）| 每段虚线长度 |
 | `dash_as_cylinders` | True | 圆柱形虚线（高质量）|
 | `dash_width` | 2.5 | 虚线宽度 |
+
+**渲染内容（已固化）：**
+- 背景：纯黑
+- 蛋白：cartoon（灰色80，透明度 20%）
+- 疏水残基：**橙色 sticks**（ALA85/TRP89/VAL203/GLY204/PHE231/VAL257/VAL279）
+- 疏水虚线：**橙色，1条/残基， cutoff=10.0 Å**
+- H-bond：青色虚线，cutoff=4.0 Å
+- π-π：绿色虚线，cutoff=6.0 Å
+- 残基标签：**白色字体（font_id=16, size=20）标注 CA 原子**
+- 配体：gold sticks（C）+ red O
+- 光照：ambient=0.5 / specular=0.6 / shininess=55（Leipzig）
+
+
+**发表级四宫格标准布局（推荐）：**
+
+| 面板 | 场景参数 | 内容 |
+|------|---------|------|
+| 左上 | `render_complex()` 或 `scene='full'` | 蛋白全长 cartoon + 配体 gold sticks + 结合位点黄色标记球 |
+| 右上 | `render_pocket()` 或 `scene='pocket'` | 口袋蓝白渐变 surface |
+| 左下 | `render_interactions_pymol()` | 橙色 sticks + 7条疏水虚线 + 残基白标 |
+| 右下 | `scene='ligand_closeup'` | 配体 ball-and-stick 特写 |
 
 **相互作用颜色：**
 - H-bond → `cyan`（青色）
@@ -213,18 +244,43 @@ intx = detect_interactions(
 
 ## 一、获取蛋白质结构
 
+> ⚠️ **推荐：优先使用实验 PDB 结构，实验结构不可用时再 fallback 到 AlphaFold。**
+> 
+> 原因：PDB 晶体结构来自 X-ray/NMR/冷冻电镜，反映真实构象（含水分子、辅因子、变构位点），对接精度远高于 AI 预测。AlphaFold 可用于无实验结构时的快速预测，但结论需实验验证。
+
 ```python
 from autodock import fetch_protein_pdb, fetch_protein_alphafold, fetch_protein
 
-# RCSB 实验结构
+# ✅ 推荐：先尝试 RCSB 实验结构
 fetch_protein_pdb("6LU7")
 
-# AlphaFold AI 预测
+# Fallback：PDB 无结构时使用 AlphaFold
 fetch_protein_alphafold("Q9H825")
 
-# 统一接口
-fetch_protein(pdb_id="6LU7", source="pdb")
-fetch_protein(uniprot_id="Q9H825", source="alphafold")
+# 自动 fallback 入口（推荐：优先 PDB → PDB-REDO → AlphaFold → SwissModel）
+fetch_protein(uniprot_id="Q9H825")
+```
+
+### fetch_protein — 自动优先级链
+
+```python
+fetch_protein(pdb_id=None, uniprot_id=None, source='auto', output_dir='./structures')
+```
+
+**source='auto' 时（默认）：**
+- `pdb_id` 给定 → 优先 RCSB PDB，失败则 PDB-REDO，再失败则用 `uniprot_id` fallback 到 AlphaFold
+- 仅 `uniprot_id` → AlphaFold 优先，失败则 SwissModel
+
+**显式指定 source：**
+- `source='pdb'` — 只用 RCSB PDB
+- `source='pdbredo'` — 只用 PDB-REDO
+- `source='alphafold'` — 只用 AlphaFold
+- `source='swissmodel'` — 只用 SwissModel
+
+**若无 PDB ID，直接用：**
+```python
+fetch_protein_pdb("6LU7")           # 有 PDB ID，直接实验结构
+fetch_protein_alphafold("Q9H825")  # 无 PDB ID，用 AlphaFold
 ```
 
 ---
@@ -254,8 +310,15 @@ prepare_receptor("protein.pdb", "protein.pdbqt")
 
 ```python
 from autodock import prepare_ligand
-prepare_ligand("CCO", "ethanol.pdbqt")
+
+# 标准调用（seed=42 保证可重复的 3D 构象）
+prepare_ligand("CCO", "ethanol.pdbqt", seed=42)
+
+# 自定义随机种子（如需不同构象）
+prepare_ligand("CCO", "ethanol.pdbqt", seed=123)
 ```
+
+> **注意**：`seed` 参数控制 ETKDGv3 构象生成。固定种子确保每次运行产生相同的 3D 几何结构，便于结果复现。
 
 ---
 
@@ -284,9 +347,14 @@ energies, poses = dock_ligand(
     center=(10.5, 20.3, 15.7),
     box_size=(20, 20, 20),
     exhaustiveness=8,
+    receptor_pdb="protein.pdb",   # 可选：传入原始PDB以自动生成复合体PDB
 )
 
 best = energies[0][0]  # kcal/mol，越负越紧密
+
+# 自动保存（无需手动）：
+#   receptor_dir/docking_best.pdbqt   ← 对接配体 pose
+#   receptor_dir/docked_complex.pdb   ← 蛋白+配体复合体（传入 receptor_pdb 时生成）
 ```
 
 ---
@@ -343,37 +411,56 @@ from autodock import (
     composite_summary,
 )
 
-# 1. 获取结构
-fetch_protein_alphafold("Q9H825")  # METTL8
+# 1. 获取结构（自动优先级链：PDB → PDB-REDO → AlphaFold → SwissModel）
+fetch_protein(uniprot_id="Q9H825")  # 自动选择最佳可用来源
 mol = fetch_molecule_pubchem("Urolithin A")
 
 # 2. 制备
-prepare_receptor("./structures/AF-Q9H825.pdb", "./structures/METTL8.pdbqt")
+prepare_receptor("./structures/METTL8.pdb", "./structures/METTL8.pdbqt")
 prepare_ligand(mol['smiles'], "./structures/UrolithinA.pdbqt")
 
 # 3. fpocket 自动找口袋
-center, box = find_binding_site("./structures/AF-Q9H825.pdb")
+center, box = find_binding_site("./structures/METTL8.pdb")
 
-# 4. 对接
-dock_ligand("./structures/METTL8.pdbqt", "./structures/UrolithinA.pdbqt", center, box)
+# 4. 对接（传入 receptor_pdb=... 自动生成复合体PDB）
+dock_ligand(
+    receptor_pdbqt="./structures/METTL8.pdbqt",
+    ligand_pdbqt="./structures/UrolithinA.pdbqt",
+    center=center, box_size=box,
+    exhaustiveness=32,
+    receptor_pdb="./structures/AF-Q9H825.pdb",   # ← 传入PDB，自动生成复合体
+)
+# 自动生成：./structures/docking_best.pdbqt + ./structures/docked_complex.pdb
 
-# 5. 检测相互作用
+# 5. 检测相互作用（使用自动保存的 pose 文件）
 intx = detect_interactions(
-    "./structures/METTL8.pdbqt",
-    ligand_pdbqt="./docking_best.pdbqt",
+    receptor_pdb="./structures/AF-Q9H825.pdb",
+    ligand_pdbqt="./structures/docking_best.pdbqt",
     center=center,
 )
 
 # 6. 渲染（5 种场景）
-render_scene("./structures/AF-Q9H825.pdb", "./results/complex.png",
-             scene='complex', ligand_pdbqt="./docking_best.pdbqt")
+for scene in ['complex', 'pocket', 'interaction', 'electrostatic', 'ligand_closeup']:
+    render_scene(
+        "./structures/AF-Q9H825.pdb",
+        f"./results/{scene}.png",
+        scene=scene, center=center, interactions=intx,
+        ligand_pdbqt="./structures/docking_best.pdbqt",
+        width=2400, height=1800, dpi=300,
+    )
 
-render_scene("./structures/AF-Q9H825.pdb", "./results/pocket.png",
-             scene='pocket', center=center, ligand_pdbqt="./docking_best.pdbqt")
-
-render_scene("./structures/AF-Q9H825.pdb", "./results/interactions.png",
-             scene='interaction', center=center, interactions=intx,
-             ligand_pdbqt="./docking_best.pdbqt")
+# 7. 综合输出
+composite_summary(
+    panels=[
+        "./results/complex.png",
+        "./results/pocket.png",
+        "./results/interaction.png",
+    ],
+    output_png="./results/summary.png",
+    ncols=3,
+    panel_titles=["A. Protein-Ligand Complex", "B. Binding Pocket", "C. Interactions"],
+    figure_title="Molecular Docking: Urolithin A ↔ METTL8 (Q9H825)",
+)
 ```
 
 ---
