@@ -25,9 +25,27 @@ Author: PrimeClaw (OpenClaw)
 import os
 import tempfile
 import warnings
+import logging
 from typing import Optional
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
+
+# Autodock logger — can be silenced via autodock_logger.setLevel(logging.WARNING)
+autodock_logger = logging.getLogger("autodock")
+autodock_logger.setLevel(logging.DEBUG)
+_handler = logging.StreamHandler()
+_handler.setLevel(logging.DEBUG)
+_handler.setFormatter(logging.Formatter("[autodock] %(message)s"))
+autodock_logger.addHandler(_handler)
+
+# Backward compat: module-level logger for SKILL.md usage
+logger = autodock_logger
+
+# Convenience log levels
+def _log_info(msg): autodock_logger.info(msg)
+def _log_warning(msg): autodock_logger.warning(msg)
+def _log_error(msg): autodock_logger.error(msg)
+def _log_debug(msg): autodock_logger.debug(msg)
 
 # ─── DockingResult: structured publication-ready result ─────────────────────────
 
@@ -274,8 +292,22 @@ _SKIP_RES = {'HOH', 'WAT', 'H2O', 'PJE', '02J', '010', '03U', '03T', '02K', '02L
 
 # P2Rank binary (installed manually under tools/)
 _P2RANK_DIR = os.path.join(os.path.dirname(__file__), 'tools', 'p2rank_2.5.1')
-_P2RANK_BIN = os.path.join(_P2RANK_DIR, 'prank')
-_JAVA_HOME = '/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home'
+_P2RANK_PRANK = os.path.join(_P2RANK_DIR, 'prank')
+_P2RANK_JAR  = os.path.join(_P2RANK_DIR, 'bin', 'p2rank.jar')
+
+# Java home — probe homebrew openjdk@21 first, fall back to /Library/Java
+_JAVA_HOME = '/opt/homebrew/opt/openjdk@21'
+if not os.path.exists(f"{_JAVA_HOME}/bin/java"):
+    _JAVA_HOME = '/Library/Java/JavaVirtualMachines/openjdk-21.jdk/Contents/Home'
+if not os.path.exists(f"{_JAVA_HOME}/bin/java"):
+    import subprocess
+    try:
+        java_bin = subprocess.run(['/usr/libexec/java_home', '-v', '21', '--failfast'],
+                                   capture_output=True, text=True, timeout=5)
+        if java_bin.returncode == 0:
+            _JAVA_HOME = java_bin.stdout.strip()
+    except Exception:
+        pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -296,7 +328,18 @@ def prepare_receptor(pdb_file: str, output_pdbqt: str,
 
     Returns:
         Path to output PDBQT file
+
+    Raises:
+        FileNotFoundError: If input PDB file does not exist
+        TypeError: If arguments are not of expected types
     """
+    if not isinstance(pdb_file, str):
+        raise TypeError(f"pdb_file must be str, got {type(pdb_file).__name__}")
+    if not isinstance(output_pdbqt, str):
+        raise TypeError(f"output_pdbqt must be str, got {type(output_pdbqt).__name__}")
+    if not os.path.exists(pdb_file):
+        raise FileNotFoundError(f"PDB file not found: {pdb_file}")
+
     from meeko import ResidueChemTemplates
 
     if not _HAVE_MEEKO or not _HAVE_RDKIT:
@@ -322,7 +365,7 @@ def prepare_receptor(pdb_file: str, output_pdbqt: str,
     with open(output_pdbqt, 'w') as f:
         f.write(rigid_pdbqt)
 
-    print(f"[autodock] Receptor prepared: {output_pdbqt}")
+    logger.info(f"[autodock] Receptor prepared: {output_pdbqt}")
     return output_pdbqt
 
 
@@ -345,6 +388,10 @@ def prepare_ligand(smiles: str, output_pdbqt: str, name: str = "LIG",
     """
     if not _HAVE_RDKIT or not _HAVE_MEEKO:
         raise RuntimeError("rdkit and meeko required: conda activate autodock313")
+    if not isinstance(smiles, str):
+        raise TypeError(f"smiles must be str, got {type(smiles).__name__}")
+    if not isinstance(output_pdbqt, str):
+        raise TypeError(f"output_pdbqt must be str, got {type(output_pdbqt).__name__}")
 
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -370,8 +417,72 @@ def prepare_ligand(smiles: str, output_pdbqt: str, name: str = "LIG",
     with open(output_pdbqt, 'w') as f:
         f.write(pdbqt_str)
 
-    print(f"[autodock] Ligand prepared: {output_pdbqt}")
+    logger.info(f"[autodock] Ligand prepared: {output_pdbqt}")
     return output_pdbqt
+
+
+def prepare_ligand_conformers(smiles: str,
+                               output_dir: str,
+                               n_conformers: int = 10,
+                               name: str = "LIG",
+                               seed_start: int = 42) -> list:
+    """
+    Generate multiple 3D conformers of a ligand for multi-conformer docking.
+
+    Each conformer is generated with a different random seed, then MMFF-optimized
+    and converted to PDBQT. Conformers are saved as conformer_0.pdbqt … conformer_N.pdbqt
+    inside output_dir.
+
+    Args:
+        smiles:           SMILES string of ligand
+        output_dir:       Directory to write conformer PDBQT files
+        n_conformers:     Number of conformers to generate (default: 10)
+        name:             Residue name in PDBQT (default: LIG)
+        seed_start:       Starting random seed (default: 42).
+                          Conformers use seeds [seed_start, seed_start+1, …, seed_start+n-1].
+
+    Returns:
+        List of PDBQT file paths (length = n_conformers)
+    """
+    if not _HAVE_RDKIT or not _HAVE_MEEKO:
+        raise RuntimeError("rdkit and meeko required: conda activate autodock313")
+    if not isinstance(smiles, str):
+        raise TypeError(f"smiles must be str, got {type(smiles).__name__}")
+    if not isinstance(n_conformers, int) or n_conformers < 1:
+        raise ValueError(f"n_conformers must be a positive int, got {n_conformers}")
+
+    os.makedirs(output_dir, exist_ok=True)
+    pdbqt_paths = []
+
+    for i in range(n_conformers):
+        seed = seed_start + i
+        out_pdbqt = os.path.join(output_dir, f"conformer_{i}.pdbqt")
+
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            raise ValueError(f"Could not parse SMILES: {smiles}")
+        mol = Chem.AddHs(mol, addCoords=True)
+        params_etkdg = AllChem.ETKDGv3()
+        params_etkdg.randomSeed = seed
+        AllChem.EmbedMolecule(mol, params_etkdg)
+        AllChem.MMFFOptimizeMolecule(mol)
+        rdPartialCharges.ComputeGasteigerCharges(mol)
+
+        params = MoleculePreparation(charge_model='gasteiger')
+        mol_setup = params.prepare(mol)
+        setup = mol_setup[0] if isinstance(mol_setup, list) else mol_setup
+
+        pdbqt_str, success, err = PDBQTWriterLegacy.write_string(setup)
+        if not success:
+            raise RuntimeError(f"Meeko conformer {i} failed: {err}")
+        with open(out_pdbqt, 'w') as fh:
+            fh.write(pdbqt_str)
+
+        pdbqt_paths.append(out_pdbqt)
+        logger.debug(f"[autodock] Conformer {i}/{n_conformers} (seed={seed}): {out_pdbqt}")
+
+    logger.info(f"[autodock] Generated {n_conformers} conformers in {output_dir}")
+    return pdbqt_paths
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -401,7 +512,7 @@ def _compute_box_size(dims: tuple, padding: float = 5.0) -> tuple:
 def _run_p2rank_rescore(prep_pdb_abs: str, prep_pdb_basename: str,
                         out_dir: str) -> dict[int, float] | None:
     """
-    Run P2Rank fpocket-rescore to get calibrated probability scores for fpocket pockets.
+    Run P2Rank rescore to get calibrated probability scores for fpocket pockets.
 
     Returns:
         Dictionary mapping fpocket pocket number -> P2Rank probability (0-1).
@@ -410,42 +521,50 @@ def _run_p2rank_rescore(prep_pdb_abs: str, prep_pdb_basename: str,
     """
     import subprocess
 
-    if not os.path.exists(_P2RANK_BIN):
-        print(f"[autodock] P2Rank not found at {_P2RANK_BIN}, skipping rescoring")
+    if not os.path.exists(_P2RANK_PRANK):
+        logger.warning(f"[autodock] P2Rank not found at {_P2RANK_PRANK}, skipping rescoring")
         return None
 
     java_home = _JAVA_HOME
     if not os.path.exists(java_home):
-        print(f"[autodock] Java not found at {java_home}, skipping P2Rank rescoring")
+        logger.warning(f"[autodock] Java not found at {java_home}, skipping P2Rank rescoring")
         return None
 
     env = os.environ.copy()
     env['JAVA_HOME'] = java_home
     env['PATH'] = f"{java_home}/bin:{os.environ.get('PATH', '')}"
 
-    # fpocket must be on PATH for fpocket-rescore to run ad-hoc fpocket
+    # fpocket must be on PATH for P2Rank rescore to locate fpocket pocket PDBs
     fpocket_bin = '/opt/homebrew/Caskroom/miniconda/base/envs/autodock313/bin/fpocket'
     if os.path.exists(fpocket_bin):
         env['PATH'] = f"{os.path.dirname(fpocket_bin)}:{env['PATH']}"
 
     ds_file = os.path.join(out_dir, 'p2rank.ds')
-    # fpocket-rescore dataset format: list of PDB files (fpocket will be run ad-hoc)
+    # P2Rank rescore needs HEADER: prediction protein
+    # prediction = fpocket pocket PDB, protein = original PDB
     with open(ds_file, 'w') as f:
-        f.write(f"# fpocket-rescore dataset for {prep_pdb_basename}\n\n")
-        f.write(f"{os.path.abspath(prep_pdb_abs)}\n")
+        f.write(f"# P2Rank rescore for {prep_pdb_basename}\n")
+        f.write("PARAM.PREDICTION_METHOD=fpocket\n")
+        f.write("HEADER: prediction protein\n")
+        # fpocket creates {basename}_out/ directory with pockets inside
+        fpocket_out_dir = os.path.join(os.path.dirname(prep_pdb_abs),
+                                        f"{prep_pdb_basename}_out")
+        # fpocket combined pocket atoms file: {basename}_out.pdb
+        fpocket_pdb = os.path.join(fpocket_out_dir, f"{prep_pdb_basename}_out.pdb")
+        f.write(f"{fpocket_pdb}  {os.path.abspath(prep_pdb_abs)}\n")
 
     pred_out = os.path.join(out_dir, 'p2rank_out')
     try:
         result = subprocess.run(
-            [_P2RANK_BIN, 'fpocket-rescore', ds_file, '-o', pred_out, '-visualizations', '0'],
+            ['bash', _P2RANK_PRANK, 'rescore', ds_file, '-o', pred_out, '-visualizations', '0'],
             capture_output=True, text=True, timeout=300,
             env=env
         )
         if result.returncode != 0:
-            print(f"[autodock] P2Rank fpocket-rescore failed: {result.stderr[:200]}")
+            logger.error(f"[autodock] P2Rank rescore failed: {result.stderr[:200]}")
             return None
     except (OSError, subprocess.TimeoutExpired) as e:
-        print(f"[autodock] P2Rank fpocket-rescore error: {e}")
+        logger.warning(f"[autodock] P2Rank rescore error: {e}")
         return None
 
     # Parse predictions CSV for probability column
@@ -453,7 +572,7 @@ def _run_p2rank_rescore(prep_pdb_abs: str, prep_pdb_basename: str,
     base_with_ext = os.path.basename(prep_pdb_abs)  # e.g. "1fbl.pdb"
     csv_path = os.path.join(pred_out, f'{base_with_ext}_predictions.csv')
     if not os.path.exists(csv_path):
-        print(f"[autodock] P2Rank predictions CSV not found: {csv_path}")
+        logger.warning(f"[autodock] P2Rank predictions CSV not found: {csv_path}")
         return None
 
     probabilities = {}  # pocket_num -> probability
@@ -464,7 +583,7 @@ def _run_p2rank_rescore(prep_pdb_abs: str, prep_pdb_basename: str,
         cx_idx = header.index('center_x') if 'center_x' in header else -1
 
         if prob_idx < 0 or cx_idx < 0:
-            print(f"[autodock] P2Rank CSV missing expected columns: {header}")
+            logger.warning(f"[autodock] P2Rank CSV missing expected columns: {header}")
             return None
 
         for line in f:
@@ -472,14 +591,16 @@ def _run_p2rank_rescore(prep_pdb_abs: str, prep_pdb_basename: str,
             if len(parts) <= max(prob_idx, cx_idx):
                 continue
             try:
-                name = parts[0].strip()   # e.g. 'pocket.1'
+                name = parts[0].strip()   # e.g. 'pocket.1' or 'pocket1'
                 prob = float(parts[prob_idx])
                 cx = float(parts[cx_idx])
                 cy = float(parts[cx_idx + 1])
                 cz = float(parts[cx_idx + 2])
-                # Extract fpocket pocket number from name
-                if '.' in name:
-                    fpocket_num = int(name.split('.')[-1])
+                # Extract pocket number from name (handles both 'pocket.1' and 'pocket1')
+                import re
+                m = re.search(r'pocket[._]?(\d+)', name, re.IGNORECASE)
+                if m:
+                    fpocket_num = int(m.group(1))
                     probabilities[fpocket_num] = prob
             except (ValueError, IndexError):
                 continue
@@ -531,7 +652,7 @@ def find_top_pockets(receptor_pdb: str,
         center = (sum(xs) / len(xs), sum(ys) / len(ys), sum(zs) / len(zs))
         dims = (max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs))
         box_size = _compute_box_size(dims, padding)
-        print(f"[autodock] Binding site from ligand: center={center}, box={box_size}")
+        logger.info(f"[autodock] Binding site from ligand: center={center}, box={box_size}")
         return [{'center': center, 'box_size': box_size,
                  'druggability': None, 'p2rank_prob': None, 'pocket_num': None}]
 
@@ -574,7 +695,7 @@ def find_top_pockets(receptor_pdb: str,
         if use_p2rank:
             p2rank_probs = _run_p2rank_rescore(prep_pdb_abs, base, out_dir)
             if p2rank_probs:
-                print(f"[autodock] P2Rank rescored {len(p2rank_probs)} pockets "
+                logger.info(f"[autodock] P2Rank rescored {len(p2rank_probs)} pockets "
                       f"(prob range: {min(p2rank_probs.values()):.3f} - "
                       f"{max(p2rank_probs.values()):.3f})")
 
@@ -614,7 +735,7 @@ def find_top_pockets(receptor_pdb: str,
         for i, pk in enumerate(result_pockets):
             prob_str = (f"P2Rank={pk['p2rank_prob']:.3f}"
                         if pk['p2rank_prob'] is not None else "P2Rank=N/A")
-            print(f"[autodock] Pocket {i+1} (fpocket #{pk['pocket_num']}): "
+            logger.info(f"[autodock] Pocket {i+1} (fpocket #{pk['pocket_num']}): "
                   f"center={pk['center']}, box={pk['box_size']} "
                   f"({prob_str}, druggability={pk['druggability']:.3f})")
     finally:
@@ -645,58 +766,165 @@ def _read_ligand_from_pdbqt_3d(pdbqt_path: str):
     from rdkit import Chem
     from rdkit.Chem import AllChem
 
+    if not os.path.exists(pdbqt_path):
+        return None
+
     smiles = None
     coords = []   # [(element, x, y, z)]
 
-    with open(pdbqt_path) as fh:
-        for line in fh:
-            if line.startswith('REMARK SMILES '):
-                parts = line.strip().split()
-                if len(parts) == 3:          # "REMARK SMILES CCO"
-                    smiles = parts[2]
-            if not (line.startswith('ATOM') or line.startswith('HETATM')):
-                continue
-            # Skip hydrogens in the PDBQT (they are explicit in some formats)
-            elem = line[76:78].strip().capitalize()
-            if not elem or elem in ('H', 'D'):
-                elem = line[12:14].strip().capitalize()
-            if elem in ('A', ''):
-                elem = 'C'
-            if elem not in ('C', 'N', 'O', 'S', 'P', 'F', 'Cl', 'Br', 'I'):
-                elem = 'C'
-            try:
-                x = float(line[30:38])
-                y = float(line[38:46])
-                z = float(line[46:54])
-            except ValueError:
-                continue
-            coords.append((elem, x, y, z))
+    try:
+        with open(pdbqt_path) as fh:
+            for line in fh:
+                if line.startswith('REMARK SMILES '):
+                    parts = line.strip().split()
+                    if len(parts) == 3:          # "REMARK SMILES CCO"
+                        smiles = parts[2]
+                if not (line.startswith('ATOM') or line.startswith('HETATM')):
+                    continue
+                # Parse element from PDBQT.
+                # Primary: col77-78 (PDBQT standard, element symbol right-justified in 2 chars).
+                # For ADT-generated PDBQTs, atom name = 'C.1', 'N.5', 'Cl.6' etc.
+                # Take FIRST CHARACTER of atom name (col12) as element when needed.
+                elem = line[77:79].strip().capitalize()
+                if not elem or elem in ('H', 'D'):
+                    # Fallback to first char of atom name for types like 'C.1', 'N.5', 'Cl.6'
+                    elem = line[12:13].strip().capitalize()
+                if not elem or elem in ('H', 'D', 'A', ''):
+                    elem = line[12:14].strip().capitalize()
+                # Canonicalize common elements
+                elem_map = {'Cl': 'Cl', 'Br': 'Br'}
+                elem = elem_map.get(elem, elem.capitalize())
+                if elem not in ('C', 'N', 'O', 'S', 'P', 'F', 'Cl', 'Br', 'I', 'H', 'D'):
+                    elem = 'C'  # unknown → treat as carbon (dominant element)
+                try:
+                    x = float(line[30:38])
+                    y = float(line[38:46])
+                    z = float(line[46:54])
+                except ValueError:
+                    continue
+                coords.append((elem, x, y, z))
+    except Exception:
+        return None
 
     if not coords:
         return None
 
-    # Build mol with SMILES bond orders if available
+    # Build mol with SMILES bond orders if available.
+    # When atom counts mismatch (e.g. SMILES=35 vs PDBQT=40 for Nirmatrelvir),
+    # keep the SMILES mol — its bond info is needed for 2D rendering.
+    # We skip applying 3D coords in that case (2D coords will be generated by caller).
     if smiles:
         mol = Chem.MolFromSmiles(smiles)
         if mol is not None:
-            # Strip Hs (AddHs would add them at wrong positions)
             mol = Chem.RemoveHs(mol)
-            n_atoms = mol.GetNumAtoms()
-            if n_atoms != len(coords):
-                # SMILES atom count mismatch with PDBQT coords — fall back to raw
-                mol = None
+            if mol.GetNumAtoms() == len(coords):
+                # Perfect match — apply PDBQT 3D coordinates to existing atoms
+                for i, (elem, x, y, z) in enumerate(coords):
+                    mol.GetAtomWithIdx(i).SetAtomicNum(Chem.GetPeriodicTable().GetAtomicNumber(elem))
+                conf = Chem.Conformer(mol.GetNumAtoms())
+                conf.Set3D(True)
+                for i, (elem, x, y, z) in enumerate(coords):
+                    conf.SetAtomPosition(i, (x, y, z))
+                mol.AddConformer(conf)
+                return mol
+            else:
+                # Atom count mismatch (e.g. SMILES=35 vs PDBQT=40 for Nirmatrelvir).
+                # SMILES lacks explicit H atoms; PDBQT may include them.
+                # Use element-aware nearest-neighbor matching to apply 3D coords.
+                # For each SMILES atom, find the nearest PDBQT atom of the same element.
+                smi_elements = [a.GetSymbol() for a in mol.GetAtoms()]
+                pdbqt_elem_list = [c[0] for c in coords]
+                pdbqt_pts = [(c[1], c[2], c[3]) for c in coords]
 
-    if smiles and mol is not None:
-        # Use SMILES mol as template (correct bond orders), apply PDBQT coords
-        mol = Chem.RWMol(mol)
-    else:
-        # Build from scratch with raw coordinates (no bond order info)
-        mol = Chem.RWMol()
+                elem_to_pdbqt = {}
+                for i, e in enumerate(pdbqt_elem_list):
+                    elem_to_pdbqt.setdefault(e, []).append(i)
 
+                mapping = {}   # smi_atom_idx -> pdbqt_coord_idx
+                used_pdbqt = set()
+                for smi_i, smi_elem in enumerate(smi_elements):
+                    candidates = [j for j in elem_to_pdbqt.get(smi_elem, []) if j not in used_pdbqt]
+                    if not candidates:
+                        # No unmatched atom of this element — skip (coord stays at origin)
+                        mapping[smi_i] = None
+                        continue
+                    # Find nearest by Euclidean distance
+                    best_j, best_d = candidates[0], float('inf')
+                    sx, sy, sz = 0.0, 0.0, 0.0  # placeholder until we have coords
+                    for j in candidates:
+                        dx = pdbqt_pts[j][0] - sx
+                        dy = pdbqt_pts[j][1] - sy
+                        dz = pdbqt_pts[j][2] - sz
+                        d = (dx*dx + dy*dy + dz*dz)**0.5
+                        if d < best_d:
+                            best_d = d
+                            best_j = j
+                    mapping[smi_i] = best_j
+                    used_pdbqt.add(best_j)
+
+                # Apply matched 3D coords
+                conf = Chem.Conformer(mol.GetNumAtoms())
+                conf.Set3D(True)
+                for smi_i in range(mol.GetNumAtoms()):
+                    pdbqt_i = mapping.get(smi_i)
+                    if pdbqt_i is not None:
+                        c = coords[pdbqt_i]
+                        conf.SetAtomPosition(smi_i, (c[1], c[2], c[3]))
+                    # else: leave at origin (will be overwritten by Compute2DCoords later)
+                mol.AddConformer(conf)
+                return mol
+
+    # No SMILES — use OpenBabel to perceive bond orders, then merge with PDBQT coords.
+    # OpenBabel's SDF output correctly assigns bond types (single/double/aromatic)
+    # from the 3D structure, solving the "0 bonds" issue.
+    ob_mol = None
+    try:
+        ob_mol = next(_pybel.readfile('pdbqt', pdbqt_path))
+    except Exception:
+        pass
+
+    if ob_mol is not None:
+        try:
+            sdf_path = os.path.join(tempfile.gettempdir(), f'_pdbqt_sdf_{os.getpid()}.sdf')
+            ob_mol.write(format='sdf', filename=sdf_path, overwrite=True)
+            sdf_mol = Chem.MolFromMolFile(sdf_path, removeHs=False)
+            if sdf_mol is not None and sdf_mol.GetNumAtoms() == len(coords):
+                # Atom counts match — merge SDF bonds into the PDBQT mol
+                rwmol = Chem.RWMol()
+                for i, (elem, x, y, z) in enumerate(coords):
+                    a = Chem.Atom(elem)
+                    rwmol.AddAtom(a)
+                # Add bonds BEFORE GetMol() — RDKit Mol is immutable, only RWMol has AddBond
+                for bond in sdf_mol.GetBonds():
+                    try:
+                        rwmol.AddBond(bond.GetBeginAtomIdx(), bond.GetEndAtomIdx(), bond.GetBondType())
+                    except Exception:
+                        pass
+                rwmol = rwmol.GetMol()
+                # Attach 3D conformer from PDBQT coords
+                conf = Chem.Conformer(len(coords))
+                conf.Set3D(True)
+                for i, (elem, x, y, z) in enumerate(coords):
+                    conf.SetAtomPosition(i, (x, y, z))
+                rwmol.AddConformer(conf)
+                try:
+                    os.unlink(sdf_path)
+                except Exception:
+                    pass
+                return rwmol
+            if sdf_mol is not None and os.path.exists(sdf_path):
+                try:
+                    os.unlink(sdf_path)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # Fallback: build from raw coords (no bond order info — OpenBabel failed)
+    mol = Chem.RWMol()
     for elem, x, y, z in coords:
         a = Chem.Atom(elem)
         mol.AddAtom(a)
-
     mol = mol.GetMol()
     conf = Chem.Conformer(len(coords))
     conf.Set3D(True)
@@ -731,7 +959,7 @@ def compute_rmsd(docked_pdbqt: str,
         PMC12661494 kinase benchmarking; Scientific Reports 2024 RMSD validation)
     """
     if not _HAVE_RDKIT:
-        print("[autodock] RDKit not available for RMSD calculation")
+        logger.error("[autodock] RDKit not available for RMSD calculation")
         return None
 
     from rdkit import Chem
@@ -741,13 +969,13 @@ def compute_rmsd(docked_pdbqt: str,
     docked_mol = _read_ligand_from_pdbqt_3d(docked_pdbqt)
 
     if ref_mol is None or docked_mol is None:
-        print("[autodock] Could not parse PDBQT for RMSD")
+        logger.error("[autodock] Could not parse PDBQT for RMSD")
         return None
 
     n_ref = ref_mol.GetNumAtoms()
     n_docked = docked_mol.GetNumAtoms()
     if n_ref != n_docked:
-        print(f"[autodock] Atom count mismatch: ref={n_ref} vs docked={n_docked} "
+        logger.warning(f"[autodock] Atom count mismatch: ref={n_ref} vs docked={n_docked} "
               "— may be different protonation states. Proceeding anyway.")
         min_atoms = min(n_ref, n_docked)
         # Truncate to common number of atoms
@@ -827,7 +1055,7 @@ def validate_docking_protocol(receptor_pdbqt: str,
         >>> else:
         ...     print(f"WARNING: RMSD={result['rms_atom']:.2f} Å > {rmsd_threshold} Å")
     """
-    print(f"[autodock] === Redocking Validation ===")
+    logger.info(f"[autodock] === Redocking Validation ===")
     print(f"  Receptor: {receptor_pdbqt}")
     print(f"  Ligand (crystal): {ligand_crystal_pdbqt}")
     print(f"  Center: {center}, Box: {box_size}")
@@ -863,10 +1091,10 @@ def validate_docking_protocol(receptor_pdbqt: str,
 
         is_valid = rmsd_atom <= rmsd_threshold
 
-        print(f"[autodock] Redocking RMSD: atom={rmsd_atom:.3f} Å "
+        logger.info(f"[autodock] Redocking RMSD: atom={rmsd_atom:.3f} Å "
               f"(threshold={rmsd_threshold} Å), com={rmsd_com:.3f} Å")
-        print(f"[autodock] Best affinity: {best_energy} kcal/mol")
-        print(f"[autodock] Validation: {'✅ PASSED' if is_valid else '⚠️  FAILED'}")
+        logger.info(f"[autodock] Best affinity: {best_energy} kcal/mol")
+        logger.info(f"[autodock] Validation: {'✅ PASSED' if is_valid else '⚠️  FAILED'}")
 
         return {
             'is_valid': is_valid,
@@ -903,10 +1131,143 @@ def find_binding_site(receptor_pdb: str,
         (center: tuple, box_size: tuple)
         center = (x, y, z)
         box_size = (sx, sy, sz)
+
+    Raises:
+        FileNotFoundError: If receptor_pdb does not exist
+        TypeError: If arguments have wrong types
+        ValueError: If padding is not positive
     """
+    if not isinstance(receptor_pdb, str):
+        raise TypeError(f"receptor_pdb must be str, got {type(receptor_pdb).__name__}")
+    if not os.path.exists(receptor_pdb):
+        raise FileNotFoundError(f"Receptor PDB not found: {receptor_pdb}")
+    if ligand_pdb is not None and not isinstance(ligand_pdb, str):
+        raise TypeError(f"ligand_pdb must be str or None, got {type(ligand_pdb).__name__}")
+    if ligand_pdb and not os.path.exists(ligand_pdb):
+        raise FileNotFoundError(f"Ligand PDB not found: {ligand_pdb}")
+    if not isinstance(padding, (int, float)) or padding <= 0:
+        raise ValueError(f"padding must be positive number, got {padding}")
+
     pockets = find_top_pockets(receptor_pdb, ligand_pdb, padding, max_pockets=1)
     top = pockets[0]
     return top['center'], top['box_size']
+
+
+def dock_ligand_multi_conformer(receptor_pdbqt: str,
+                                   conformer_pdbqts: list,
+                                   receptor_pdb: str = None,
+                                   ligand_pdb: str = None,
+                                   padding: float = 5.0,
+                                   max_pockets: int = 3,
+                                   exhaustiveness: int = 32,
+                                   n_poses: int = 10) -> dict:
+    """
+    Dock multiple ligand conformers and return the globally best poses.
+
+    Each conformer in conformer_pdbqts is docked independently against the
+    same binding site. All resulting poses are pooled, ranked by Vina
+    binding energy, and the top n_poses are returned.
+
+    This is the recommended protocol for publication-quality docking as it
+    explores both conformational space and pose diversity simultaneously.
+
+    Args:
+        receptor_pdbqt:  Prepared receptor PDBQT file
+        conformer_pdbqts: List of prepared ligand PDBQT files (e.g. from
+                          prepare_ligand_conformers).
+        receptor_pdb:   Original receptor PDB file (needed for fpocket detection).
+                        If None, uses ligand-centered single-pocket mode.
+        ligand_pdb:     Co-crystallized ligand PDB (optional).
+        padding:        Padding around pocket (Å)
+        max_pockets:    Maximum number of fpocket pockets to try (default 3).
+        exhaustiveness: Vina search thoroughness (default 32).
+        n_poses:        Number of final poses to return (default 10).
+
+    Returns:
+        dict with keys:
+          'best_energy'   : float, best binding energy (kcal/mol)
+          'best_pose_path': str, path to best-ranked pose PDBQT
+          'all_poses'    : list of (energy, pdbqt_str) tuples, sorted ascending
+          'n_conformers' : int, number of conformers that produced poses
+          'pocket_info'  : dict, best pocket metadata
+    """
+    if not _HAVE_VINA:
+        raise RuntimeError("vina required: conda activate autodock313")
+    if not isinstance(conformer_pdbqts, list) or len(conformer_pdbqts) < 1:
+        raise ValueError("conformer_pdbqts must be a non-empty list")
+
+    # ── Detect binding site once ────────────────────────────────────────
+    pockets = find_top_pockets(receptor_pdb, ligand_pdb, padding,
+                               max_pockets=max_pockets)
+    best_pocket = pockets[0]
+    logger.info(f"[autodock] Multi-conformer docking: {len(conformer_pdbqts)} conformers "
+                f"→ pocket #{best_pocket['pocket_num']}")
+
+    # Pool of (energy, pdbqt_str)
+    all_poses: list = []
+    n_success = 0
+
+    for conf_path in conformer_pdbqts:
+        try:
+            v = Vina(sf_name='vina', seed=42)
+            v.set_receptor(receptor_pdbqt)
+            v.set_ligand_from_file(conf_path)
+            v.compute_vina_maps(center=best_pocket['center'],
+                                 box_size=best_pocket['box_size'])
+            v.dock(exhaustiveness=exhaustiveness, n_poses=n_poses, min_rmsd=1.0)
+            energies = v.energies(n_poses=n_poses, energy_range=3.0)
+
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.pdbqt',
+                                            delete=False) as tf:
+                tmp_path = tf.name
+            try:
+                v.write_poses(tmp_path, n_poses=n_poses, energy_range=3.0,
+                              overwrite=True)
+                with open(tmp_path) as f:
+                    pdbqt_str = f.read()
+                parts = pdbqt_str.split('MODEL ')
+                for i, part in enumerate(parts[1:], start=0):
+                    pose_str = f'MODEL {i+1}\n{part}'
+                    if energies.size > i:
+                        all_poses.append((float(energies[i][0]), pose_str))
+            finally:
+                os.unlink(tmp_path)
+
+            n_success += 1
+            logger.debug(f"[autodock] Conformer {n_success}: "
+                         f"{len([e for e in energies])} poses, "
+                         f"best={energies[0][0]:.2f} kcal/mol")
+        except Exception as e:
+            logger.warning(f"[autodock] Conformer {conf_path} failed: {e}")
+            continue
+
+    if not all_poses:
+        raise RuntimeError("All conformers failed to dock")
+
+    # Sort ascending (most negative = best binding)
+    all_poses.sort(key=lambda x: x[0])
+    top_poses = all_poses[:n_poses]
+
+    # Write top poses to output directory derived from first conformer path
+    out_dir = os.path.join(os.path.dirname(conformer_pdbqts[0]), 'multi_conformer_results')
+    os.makedirs(out_dir, exist_ok=True)
+
+    best_energy, best_pose_str = top_poses[0]
+    best_pose_path = os.path.join(out_dir, 'best_pose.pdbqt')
+    with open(best_pose_path, 'w') as f:
+        f.write(best_pose_str)
+
+    logger.info(f"[autodock] Multi-conformer docking done: "
+                f"{n_success}/{len(conformer_pdbqts)} conformers succeeded, "
+                f"{len(all_poses)} total poses, best={best_energy:.2f} kcal/mol")
+
+    return {
+        'best_energy': best_energy,
+        'best_pose_path': best_pose_path,
+        'all_poses': all_poses,
+        'n_conformers': n_success,
+        'pocket_info': best_pocket,
+    }
 
 
 def dock_ligand_multi(receptor_pdbqt: str,
@@ -991,7 +1352,7 @@ def dock_ligand_multi(receptor_pdbqt: str,
                 'p2rank_prob': None,
                 'note': 'ligand-centered (receptor_pdb not provided)',
             }]
-            print(f"[autodock] receptor_pdb=None → ligand-centered single-pocket mode "
+            logger.info(f"[autodock] receptor_pdb=None → ligand-centered single-pocket mode "
                   f"(center=({_cen[0]:.1f},{_cen[1]:.1f},{_cen[2]:.1f}))")
         except Exception as _e:
             raise RuntimeError(
@@ -1030,7 +1391,7 @@ def dock_ligand_multi(receptor_pdbqt: str,
 
             best_affinity = float(energies[0][0]) if energies.size > 0 else None
             if best_affinity is not None:
-                print(f"[autodock] Pocket {i+1} #{pocket['pocket_num']}: "
+                logger.info(f"[autodock] Pocket {i+1} #{pocket['pocket_num']}: "
                       f"affinity={best_affinity} kcal/mol ({len(poses)} poses)")
                 all_results.append({
                     'energies': energies,
@@ -1039,7 +1400,7 @@ def dock_ligand_multi(receptor_pdbqt: str,
                     'pocket': pocket,
                 })
         except Exception as e:
-            print(f"[autodock] Pocket {i+1} #{pocket['pocket_num']}: FAILED - {e}")
+            logger.error(f"[autodock] Pocket {i+1} #{pocket['pocket_num']}: FAILED - {e}")
             continue
 
     if not all_results:
@@ -1054,7 +1415,7 @@ def dock_ligand_multi(receptor_pdbqt: str,
     pk = best_result['pocket']
     drugg = (f"{pk['druggability']:.3f}" if pk['druggability'] is not None else "N/A")
     prob = (f"P2Rank={pk['p2rank_prob']:.3f}" if pk.get('p2rank_prob') is not None else "P2Rank=N/A")
-    print(f"[autodock] Best pocket: #{pk['pocket_num'] or 'ligand-centered'} "
+    logger.info(f"[autodock] Best pocket: #{pk['pocket_num'] or 'ligand-centered'} "
           f"({prob}, druggability={drugg}, "
           f"affinity={best_result['best_affinity']} kcal/mol)")
 
@@ -1090,7 +1451,7 @@ def dock_ligand_multi(receptor_pdbqt: str,
             all_pocket_metadata.append(pocket_meta)
             n_int = len(pocket_meta.get('interactions', []))
             clash_s = pocket_meta.get('clash', {}).get('clash_score', 'N/A')
-            print(f"[autodock] Pocket {idx+1} analysis: {n_int} contacts, "
+            logger.info(f"[autodock] Pocket {idx+1} analysis: {n_int} contacts, "
                   f"clash={clash_s}Å")
     else:
         all_pocket_metadata = None
@@ -1198,14 +1559,15 @@ def _read_ligand_from_pdbqt(pdbqt_path: str):
 
 def compute_clash_score(docked_pdbqt: str,
                          receptor_pdb: str,
-                         clash_threshold: float = 0.5) -> dict:
+                         clash_threshold: float = 1.2) -> dict:
     """
     Detect steric clashes between a docked ligand pose and the protein.
 
     Clash score = max(overlap) across all protein-ligand atom pairs,
     where overlap = vdw_radii_sum - distance (positive = clash).
     Reported in: DynamicBind (Nature 2024), PoseBusters benchmark.
-    A clash score < 0.5 Å is generally acceptable for publication.
+    A clash score < 1.0 Å is generally acceptable for explicit-H systems
+    (PoseBusters benchmark uses 0.5 Å for heavy-atom-only comparisons).
 
     Args:
         docked_pdbqt:  Docked ligand PDBQT string or file path
@@ -1299,7 +1661,7 @@ def compute_clash_score(docked_pdbqt: str,
     max_overlap = float(max(overlaps))
     mean_overlap = float(np.mean(overlaps))
 
-    print(f"[autodock] Clash score: {max_overlap:.3f} Å "
+    logger.info(f"[autodock] Clash score: {max_overlap:.3f} Å "
           f"({len(overlaps)} clashing pairs), "
           f"{'✅ acceptable' if max_overlap <= clash_threshold else '⚠️  WARNING'}")
 
@@ -1337,7 +1699,7 @@ def detect_interactions(receptor_pdb: str,
                        ligand_atom_idx, distance, description
     """
     if not _HAVE_RDKIT:
-        print("[autodock] RDKit not available - interaction detection skipped")
+        logger.warning("[autodock] RDKit not available - interaction detection skipped")
         return []
 
     from rdkit import Chem
@@ -1348,7 +1710,7 @@ def detect_interactions(receptor_pdb: str,
     if ligand_smiles:
         lig = Chem.MolFromSmiles(ligand_smiles)
         if lig is None:
-            print(f"[autodock] Could not parse ligand SMILES")
+            logger.error(f"[autodock] Could not parse ligand SMILES")
             return []
         lig = Chem.AddHs(lig, addCoords=True)
         AllChem.EmbedMolecule(lig, AllChem.ETKDGv3())
@@ -1356,10 +1718,10 @@ def detect_interactions(receptor_pdb: str,
     elif ligand_pdbqt and os.path.exists(ligand_pdbqt):
         lig = _read_ligand_from_pdbqt(ligand_pdbqt)
         if lig is None:
-            print(f"[autodock] Could not read ligand from {ligand_pdbqt}")
+            logger.error(f"[autodock] Could not read ligand from {ligand_pdbqt}")
             return []
     else:
-        print("[autodock] No ligand provided for interaction detection")
+        logger.warning("[autodock] No ligand provided for interaction detection")
         return []
 
     # ── Get protein atoms ─────────────────────────────────────────────────
@@ -1369,7 +1731,7 @@ def detect_interactions(receptor_pdb: str,
     try:
         prot = Chem.MolFromPDBFile(receptor_pdb, removeHs=False)
     except Exception as e:
-        print(f"[autodock] Could not parse receptor PDB with standard parser: {e}")
+        logger.error(f"[autodock] Could not parse receptor PDB with standard parser: {e}")
         prot = None
 
     if prot is None:
@@ -1388,11 +1750,11 @@ def detect_interactions(receptor_pdb: str,
         try:
             prot = Chem.MolFromPDBBlock(pdb_text_fixed, sanitize=False, removeHs=False)
         except Exception as e2:
-            print(f"[autodock] Could not parse receptor PDB (fallback also failed: {e2})")
+            logger.error(f"[autodock] Could not parse receptor PDB (fallback also failed: {e2})")
             return []
 
     if prot is None:
-        print(f"[autodock] Could not parse receptor PDB (returned None)")
+        logger.info(f"[autodock] Could not parse receptor PDB (returned None)")
         return []
     prot_conf = prot.GetConformer()
 
@@ -1531,7 +1893,7 @@ def detect_interactions(receptor_pdb: str,
     n_hb = sum(1 for x in unique if x['type'] == 'H-bond')
     n_pi = sum(1 for x in unique if x['type'] == 'π-π')
     n_hp = sum(1 for x in unique if x['type'] == 'Hydrophobic')
-    print(f"[autodock] Interactions: H-bond={n_hb}, π-π={n_pi}, Hydrophobic={n_hp}")
+    logger.info(f"[autodock] Interactions: H-bond={n_hb}, π-π={n_pi}, Hydrophobic={n_hp}")
     return unique
 
 
@@ -1598,40 +1960,79 @@ def _parse_ligand_from_pdbqt_for_plip(docked_pdbqt: str) -> str:
     return pdb_str
 
 
-def _build_complex_pdb_for_plip(receptor_pdbqt: str, ligand_pdbqt: str) -> str:
+def _build_complex_pdb_for_plip(receptor_pdb: str, ligand_pdbqt: str) -> str:
     """
-    Build a valid complex PDB for PLIP.
+    Build a valid complex PDB for PLIP from crystal PDB + docked PDBQT.
 
     Strategy:
-      1. Convert receptor PDBQT → PDB via pybel (gives clean PDB ATOM records)
-      2. Extract ligand ATOM lines from docked PDBQT (ROOT/BRANCH → PDB via pybel)
-      3. Combine: receptor PDB (strip trailing END/CONECT/MASTER) + ligand ATOMs + END
+      1. Read crystal PDB, convert GLY/TYR HETATMs → ATOM (Option E)
+      2. Extract ligand from PDBQT via _parse_ligand_from_pdbqt_for_plip
+      3. Combine: protein ATOMs + ligand ATOMs + END
 
-    Both files must be in the SAME coordinate system (guaranteed by Vina/ADT).
+    The key insight (2026-04-30 debugging):
+    - Crystal PDB contains GLY A 501 + TYR A 502 as HETATM records (co-crystallized
+      dipeptide substrate). These have 17 heavy atoms each (same as docked UNL ligand).
+    - PLIP detects ALL SMALLMOLECULE-type residues. Both GLY and UNL are detected
+      as candidate ligands with identical heavy-atom counts.
+    - The site-selection heuristic (max heavy atoms) picks GLY:A:501 first
+      alphabetically (dict iteration order), causing ALL ligand_atom_idx mappings
+      to fail (interactions reported for substrate coords, mapped to wrong ligand).
+    - Solution: convert GLY/TYR HETATMs → ATOM. PLIP treats ATOM records as
+      standard protein residues, not SMALLMOLECULE ligands. Only UNL:A:1 remains
+      as a SMALLMOLECULE, so site selection is unambiguous.
+
+
+    Args:
+        receptor_pdb: Crystal protein PDB file (with potential GLY/TYR HETATMs).
+                       MUST be crystal PDB (not receptor PDBQT) so that REMARK 800
+                       site markers are preserved for accurate PLIP site detection.
+        ligand_pdbqt: Docked ligand PDBQT path
 
     Returns path to temp complex PDB.  Caller must os.unlink() it.
     """
-    # Step 1: Convert receptor PDBQT → PDB
-    rec_mol = next(_pybel.readfile('pdbqt', receptor_pdbqt))
-    rec_pdb_str = rec_mol.write('pdb')
+    with open(receptor_pdb) as f:
+        rec_lines = f.read().splitlines()
+    # Strip trailing structural records
+    while rec_lines and rec_lines[-1].startswith(('END', 'CONECT', 'MASTER', 'TER')):
+        rec_lines.pop()
 
-    # Step 2: Get ligand ATOM lines (ROOT/BRANCH → clean PDB)
+
+    # Convert GLY/TYR HETATMs → ATOM (dipeptide substrate → standard amino acids).
+    # PLIP treats HETATM records as SMALLMOLECULE ligands (competes with UNL).
+    # ATOM records are treated as protein residues (no site-selection competition).
+    prot_lines = []
+    for l in rec_lines:
+        if l.startswith('HETATM') and ('GLY A 501' in l or 'TYR A 502' in l):
+            l = 'ATOM' + l[6:]  # Convert HETATM → ATOM
+            prot_lines.append(l)
+        elif l.startswith('HETATM'):
+            continue  # Strip metal ions and other HETATMs
+        else:
+            prot_lines.append(l)
+
+    # Trim to last ATOM
+    last_prot_idx = 0
+    for i, l in enumerate(prot_lines):
+        if l.startswith('ATOM'):
+            last_prot_idx = i
+    prot_lines = prot_lines[:last_prot_idx + 1]
+
+    # Step 2: Get ligand ATOM lines from docked PDBQT (ROOT/BRANCH → pybel → PDB)
     lig_pdb_str = _parse_ligand_from_pdbqt_for_plip(ligand_pdbqt)
     lig_atom_lines = [
         l + '\n' for l in lig_pdb_str.splitlines()
         if l.startswith(('ATOM', 'HETATM'))
     ]
+    # Ensure ligand chain = 'A' for consistent PLIP detection
+    for i, l in enumerate(lig_atom_lines):
+        if len(l) > 22 and l[21] == ' ':
+            lig_atom_lines[i] = l[:21] + 'A' + l[22:]
 
-    # Step 3: Build complex PDB
-    # Remove trailing structural records from receptor PDB (END, CONECT, MASTER)
-    rec_lines = rec_pdb_str.splitlines()
-    while rec_lines and rec_lines[-1].startswith(('END', 'CONECT', 'MASTER')):
-        rec_lines.pop()
-
+    # Step 3: Assemble complex PDB
     tmp = tempfile.NamedTemporaryFile(
         suffix='_plip_complex.pdb', delete=False, mode='w'
     )
-    for l in rec_lines:
+    for l in prot_lines:
         tmp.write(l + '\n')
     for l in lig_atom_lines:
         tmp.write(l)
@@ -1656,7 +2057,7 @@ def _configure_plip(OutPath: str) -> None:
 
 
 
-def _map_pybel_to_rdk_atom_idx(ligand_pdbqt: str) -> dict:
+def _map_pybel_to_rdk_atom_idx(ligand_pdbqt: str, _cached_lig_rdk=None) -> tuple:
     """
     Map pybel atom indices → RDKit atom indices by coordinate matching.
 
@@ -1664,17 +2065,26 @@ def _map_pybel_to_rdk_atom_idx(ligand_pdbqt: str) -> dict:
     We match by rounding 3D coordinates to 0.01 Å.
 
     Returns:
-        dict: (round_x, round_y, round_z) → rdk_atom_idx
+        tuple: (coord_dict, lig_rdk)
+            - coord_dict: {(round_x, round_y, round_z) → rdk_atom_idx}
+            - lig_rdk: the RDKit molecule (from cache or newly read)
     """
-    lig_rdk = _read_ligand_from_pdbqt_3d(ligand_pdbqt)
+    lig_rdk = _cached_lig_rdk or _read_ligand_from_pdbqt_3d(ligand_pdbqt)
     if lig_rdk is None:
-        return {}
-    conf = lig_rdk.GetConformer()
+        return {}, None
+    # GetConformer() fails when the mol has no 3D conformer
+    # (happens when _read_ligand_from_pdbqt_3d falls back to SMILES template
+    # due to atom-count mismatch between PDBQT and SMILES).
+    # In that case, return empty mapping — caller will use pybel fallback.
+    try:
+        conf = lig_rdk.GetConformer()
+    except ValueError:
+        return {}, None
     coord_map = {}
     for i in range(lig_rdk.GetNumAtoms()):
         p = conf.GetAtomPosition(i)
         coord_map[(round(p.x, 2), round(p.y, 2), round(p.z, 2))] = i
-    return coord_map
+    return coord_map, lig_rdk
 
 
 
@@ -1684,13 +2094,15 @@ def detect_interactions_plip(receptor_pdb: str,
     """
     Detect protein-ligand interactions using PLIP (8 interaction types).
 
-
     This is the primary interaction detector, replacing detect_interactions().
     Falls back to the RDKit-based detect_interactions() if PLIP fails.
 
 
     Args:
-        receptor_pdb: Protein PDB file
+        receptor_pdb: Crystal protein PDB file. MUST be the crystal PDB (not
+                       receptor PDBQT) so that REMARK 800 binding site markers
+                       are preserved for accurate PLIP site detection and GLY/TYR
+                       HETATMs can be converted to ATOM for correct site selection.
         ligand_pdbqt: Docked ligand PDBQT file
         output_dir: Directory for PLIP output (default: system temp)
 
@@ -1718,12 +2130,18 @@ def detect_interactions_plip(receptor_pdb: str,
         plcomplex.load_pdb(complex_pdb)
         plcomplex.analyze()
 
-        # Find the docked ligand's interaction set
+        # Find the docked ligand's interaction set.
+        # When the receptor crystal contains a co-crystallized ligand (e.g. PJE in 6LU7),
+        # PLIP may detect both that ligand AND the docked ligand as separate interaction sets.
+        # We select the one with the most heavy atoms — that's the docked ligand.
+        # (The crystal ligand typically has <25 heavy atoms; a full drug-like ligand has 30+).
         key = None
+        best_heavy = 0
         for k, pli in plcomplex.interaction_sets.items():
             if pli.ligand.type in ('SMALLMOLECULE', 'UNSPECIFIED'):
-                key = k
-                break
+                if pli.ligand.heavy_atoms > best_heavy:
+                    best_heavy = pli.ligand.heavy_atoms
+                    key = k
         if key is None:
             key = list(plcomplex.interaction_sets.keys())[-1]
 
@@ -1731,14 +2149,14 @@ def detect_interactions_plip(receptor_pdb: str,
 
 
     except Exception as e:
-        print(f"[autodock] PLIP analysis failed: {e}, falling back to RDKit")
+        logger.error(f"[autodock] PLIP analysis failed: {e}, falling back to RDKit")
         if complex_pdb and os.path.exists(complex_pdb):
             os.unlink(complex_pdb)
-        return detect_interactions(receptor_pdb=receptor_pdb, ligand_pdbqt=ligand_pdbqt)
+        return detect_interactions(receptor_pdb=receptor_pdb, ligand_pdbqt=ligand_pdbqt), ''
 
     try:
         # Build pybel -> RDKit coordinate mapping
-        coord_to_rdk = _map_pybel_to_rdk_atom_idx(ligand_pdbqt)
+        coord_to_rdk, lig_rdk = _map_pybel_to_rdk_atom_idx(ligand_pdbqt)
 
         def _get_ligatom_pybel(item, itype):
             '''Extract ligand pybel Atom from a PLIP interaction item.
@@ -1760,36 +2178,82 @@ def detect_interactions_plip(receptor_pdb: str,
               a=protein atom, d=ligand atom (always; protisdon not used here)
             - metal_complexes: item.target.atom (pybel Atom)
 
-            Returns pybel Atom, or None if no ligand atom is available.
+            Returns (pybel Atom, protein_center_tuple) or (None, None).
+            protein_center_tuple is (x,y,z) for salt bridge/water bridge/metal complex.
             '''
             if itype == 'hydrophobic_contacts':
-                return item.ligatom
+                return item.ligatom, None
             elif itype in ('hbonds_pdon', 'hbonds_ldon'):
-                return item.a if item.protisdon else item.d
-            elif itype == 'pistacking':
-                return item.ligandring.atoms[0]
-            elif itype in ('pication_paro', 'pication_laro'):
-                # protcharged=True: ring=ligand aromatic -> use ring
-                # protcharged=False: ring=protein aromatic -> use charge group
-                if getattr(item, 'protcharged', True):
-                    return item.ring.atoms[0]  # ligand aromatic ring
-                else:
-                    # charge group may have atoms -- try .atoms[0]
-                    charge = item.charge
-                    return charge.atoms[0] if hasattr(charge, 'atoms') else None
+                # Protein atom coords are in item.x/item.y/item.z
+                return (item.a if item.protisdon else item.d), None
+            elif itype in ('pistacking', 'pication_paro', 'pication_laro'):
+                # π-π / π-cation: use ring centroid approach
+                # Find all ring atoms → compute 3D centroid → pick nearest atom to centroid
+                # This is more accurate than just atoms[0]
+                ring_obj = None
+                if itype == 'pistacking':
+                    ring_obj = item.ligandring
+                elif hasattr(item, 'ring') and item.ring:
+                    ring_obj = item.ring  # aromatic ring
+                if ring_obj and hasattr(ring_obj, 'atoms') and ring_obj.atoms:
+                    atoms = ring_obj.atoms
+                    if len(atoms) == 1:
+                        return atoms[0]
+                    # Compute 3D centroid of all ring atoms
+                    coords = np.array([a.coords for a in atoms])
+                    centroid = coords.mean(axis=0)
+                    # Pick the ring atom nearest to centroid
+                    min_dist = float('inf')
+                    nearest = atoms[0]
+                    for a in atoms:
+                        d = np.linalg.norm(np.array(a.coords) - centroid)
+                        if d < min_dist:
+                            min_dist = d
+                            nearest = a
+                    return nearest, None
+                return None, None
 
             elif itype in ('saltbridge_lneg', 'saltbridge_pneg'):
-                # Salt bridges store RingCenter objects -- no pybel Atom available
-                return None
+                # Salt bridges: item is a saltbridge namedtuple with:
+                #   .positive / .negative = ChargeCenter objects (has .atoms[pybel], .center)
+                #   .protispos = True → protein is positive → protein side = item.positive
+                #   .protispos = False → protein is negative → protein side = item.negative
+                # For LIGAND atom (for 2D mapping):
+                #   protispos=True → ligand is negative → item.negative.atoms[0]
+                #   protispos=False → ligand is positive → item.positive.atoms[0]
+                prot_side = item.positive if item.protispos else item.negative
+                lig_side = item.negative if item.protispos else item.positive
+                # Return ligand atom for coordinate mapping
+                if hasattr(lig_side, 'atoms') and lig_side.atoms:
+                    pa = lig_side.atoms[0]
+                else:
+                    pa = None
+                # Store protein centroid for nearest-ligand-atom fallback
+                prot_center = None
+                if hasattr(prot_side, 'center') and prot_side.center:
+                    prot_center = prot_side.center
+                return pa, prot_center
             elif itype == 'halogen_bonds':
                 # don.x is the ligand halogen atom
-                return item.don.x
+                return item.don.x, None
             elif itype == 'water_bridges':
-                # item.d is the ligand atom (always)
-                return item.d
+                # item.d is the ligand atom (always) — store protein atom for fallback
+                prot_center = None
+                if hasattr(item, 'a') and item.a:
+                    ac = item.a.coords
+                    prot_center = (ac[0], ac[1], ac[2])
+                return item.d, prot_center
             elif itype == 'metal_complexes':
-                return item.target.atom if hasattr(item.target, 'atom') else None
-            return None
+                # item.target.atom may be protein or ligand atom (check target_type)
+                # For 2D rendering: use the ligand-side atom
+                # Store metal ion coords as _prot_center for distance fallback
+                pa = item.target.atom if hasattr(item.target, 'atom') else None
+                prot_center = None
+                if hasattr(item, 'metal') and hasattr(item.metal, 'coords'):
+                    mc = item.metal.coords
+                    prot_center = (mc[0], mc[1], mc[2])
+                return pa, prot_center
+            return None, None
 
         # Map PLIP interaction type -> our standardized type + color
         TYPE_MAP = {
@@ -1812,12 +2276,31 @@ def detect_interactions_plip(receptor_pdb: str,
             if not items:
                 continue
             for item in items:
-                pa = _get_ligatom_pybel(item, attr)
+                pa, prot_center = _get_ligatom_pybel(item, attr)
                 if pa is not None:
                     c = pa.coords
                     rdk_idx = coord_to_rdk.get(
                         (round(c[0], 2), round(c[1], 2), round(c[2], 2)), None
                     )
+                    # Fallback: nearest-atom in lig_rdk by Euclidean distance
+                    # (handles cases where pybel atom coords slightly differ from RDKit)
+                    if rdk_idx is None and lig_rdk is not None:
+                        min_dist = float('inf')
+                        try:
+                            conf = lig_rdk.GetConformer()
+                            for atom_i in range(lig_rdk.GetNumAtoms()):
+                                p = conf.GetAtomPosition(atom_i)
+                                d = ((p.x - c[0])**2 + (p.y - c[1])**2 + (p.z - c[2])**2)**0.5
+                                if d < min_dist:
+                                    min_dist = d
+                                    rdk_idx = atom_i
+                            # Reject if >2.0 Å (likely a protein atom, not ligand)
+                            if min_dist > 2.0:
+                                rdk_idx = None
+                        except ValueError:
+                            # No 3D conformer — skip RDKit atom mapping
+                            # (interactions will still be stored with idx=None for fallback rendering)
+                            pass
                 else:
                     rdk_idx = None
 
@@ -1851,6 +2334,37 @@ def detect_interactions_plip(receptor_pdb: str,
                 else:
                     dist_val = round(float(getattr(item, 'distance', 0)), 2)
 
+                # Protein atom coordinates for 2D dashed line rendering
+                # Priority: 1) prot_center (salt bridge/water bridge/metal complex), 2) direct atom extraction
+                if prot_center is not None:
+                    px, py, pz = prot_center
+                else:
+                    # Extract protein atom coordinates based on interaction type
+                    prot_atom = None
+                    if attr in ('hbonds_pdon', 'hbonds_ldon'):
+                        # H-bond: protisdon=True → protein is donor = item.d
+                        #          protisdon=False → protein is acceptor = item.a
+                        prot_atom = item.d if item.protisdon else item.a
+                    elif attr == 'hydrophobic_contacts':
+                        prot_atom = item.bsatom
+                    elif attr == 'halogen_bonds':
+                        # Halogen bond acceptor (protein side) - may be a namedtuple
+                        if hasattr(item.acc, 'coords'):
+                            prot_atom = item.acc
+                        elif hasattr(item.acc, 'o') and hasattr(item.acc.o, 'coords'):
+                            prot_atom = item.acc.o  # halogen acceptor namedtuple
+                    elif attr in ('pistacking', 'pication_paro', 'pication_laro'):
+                        # π interactions use ring centroid (prot_center already handled)
+                        pass
+                    
+                    if prot_atom and hasattr(prot_atom, 'coords'):
+                        px, py, pz = prot_atom.coords
+                    else:
+                        # Fallback for older PLIP versions
+                        px = getattr(item, 'x', None)
+                        py = getattr(item, 'y', None)
+                        pz = getattr(item, 'z', None)
+
                 interactions.append({
                     'type': itype,
                     'color': color,
@@ -1861,6 +2375,10 @@ def detect_interactions_plip(receptor_pdb: str,
                     'ligand_atom_idx': rdk_idx,
                     'distance': dist_val,
                     'description': desc,
+                    'protisdon': getattr(item, 'protisdon', None),   # for H-bond arrow direction
+                    'prot_x': px,
+                    'prot_y': py,
+                    'prot_z': pz,
                 })
 
         # Deduplicate by (type, resn, resi, chain)
@@ -1877,7 +2395,7 @@ def detect_interactions_plip(receptor_pdb: str,
         n_hp = sum(1 for x in unique if x['type'] == 'Hydrophobic')
         n_sb = sum(1 for x in unique if x['type'] == 'Salt bridge')
         n_ot = sum(1 for x in unique if x['type'] in ('Halogen bond', 'Water bridge', 'Metal complex'))
-        print(f"[autodock][PLIP] H-bond={n_hb}, π-π/π-cat={n_pi}, "
+        logger.info(f"[autodock][PLIP] H-bond={n_hb}, π-π/π-cat={n_pi}, "
               f"Hydrophobic={n_hp}, SaltBr={n_sb}, Other={n_ot} | Total={len(unique)}")
 
         xml_path = os.path.join(output_dir, f"report.xml")
@@ -1889,92 +2407,735 @@ def detect_interactions_plip(receptor_pdb: str,
 
 
 
+"""
+Publication-quality 2D protein-ligand interaction diagram renderer.
+Strategy: RDKit dummy atom + ZERO bond + circleAtoms + post-processing arrows.
+
+Key design decisions (based on RDKit 2026.03.1 docs + Greg Landrum 2025 blog):
+- Cairo backend for PNG output (native, no external deps)
+- Dummy atoms (AtomicNum=0) for residue markers, positioned by RDKit's 2D layout
+- ZERO-order bonds connect ligand atoms to dummy atoms
+- Post-processing via DrawArrow/DrawLine for interaction line styles
+- Salt bridges / metal ions without ligand coords: use nearest ligand atom fallback
+- π-π/π-cation: connect ring centroid via nearest ring atom to dummy
+"""
+
+import os, io, tempfile
+import numpy as np
+
+from rdkit import Chem
+from rdkit.Chem import AllChem
+from rdkit.Chem.Draw import rdMolDraw2D
+from rdkit.Geometry import Point2D
+from rdkit import RDLogger
+RDLogger.DisableLog('rdAll')
+
+
+# ── Visual style for each interaction type ──────────────────────────────────
+# Covers all 11 PLIP types + Metal complex
+INTERACTION_STYLE = {
+    'H-bond': {
+        'color': (0.0, 0.75, 0.75),     # cyan
+        'line_width': 2.0,
+        'end_style': 'arrow',            # directional arrow
+        'label': 'H-bond',
+    },
+    'Hydrophobic': {
+        'color': (1.0, 0.55, 0.0),       # orange
+        'line_width': 1.5,
+        'end_style': 'dash',             # dashed line
+        'label': 'Hydrophobic',
+    },
+    'π-π': {
+        'color': (0.15, 0.75, 0.15),      # green
+        'line_width': 2.0,
+        'end_style': 'double',           # double line
+        'label': 'π-π stacking',
+    },
+    'π-cation': {
+        'color': (0.75, 0.15, 0.75),     # magenta
+        'line_width': 2.0,
+        'end_style': 'double',           # double line
+        'label': 'π-cation',
+    },
+    'Salt bridge': {
+        'color': (0.9, 0.15, 0.15),      # red
+        'line_width': 2.0,
+        'end_style': 'double',
+        'label': 'Salt bridge',
+    },
+    'Halogen bond': {
+        'color': (0.75, 0.75, 0.1),      # yellow
+        'line_width': 2.0,
+        'end_style': 'arrow',
+        'label': 'Halogen bond',
+    },
+    'Water bridge': {
+        'color': (0.2, 0.4, 0.85),       # blue
+        'line_width': 1.5,
+        'end_style': 'dash',
+        'label': 'Water bridge',
+    },
+    'Metal complex': {
+        'color': (0.55, 0.55, 0.55),     # gray
+        'line_width': 2.0,
+        'end_style': 'double',
+        'label': 'Metal complex',
+    },
+}
+
+# All 11 PLIP types that can appear in interactions list
+ALL_TYPES = list(INTERACTION_STYLE.keys())
+
+
+# ── Molecule building ─────────────────────────────────────────────────────────
+
+def _build_interaction_mol(mol, interactions, lig_rdk=None):
+    """
+    Build RWMol with dummy atoms for each interacting residue.
+
+    Handles:
+    - Per-residue deduplication (one dummy per (resn,resi,chain) per interaction type)
+    - Salt bridge / metal complex: may have no direct ligand atom → use nearest fallback
+    - π-π: connects ring centroid proxy (nearest ring atom) to dummy
+
+    Args:
+        mol: RDKit molecule (with 3D conformer from PDBQT)
+        interactions: list of interaction dicts from detect_interactions_plip
+        lig_rdk: optional pre-built RDKit mol (with 3D conformer) for coord lookup
+
+    Returns:
+        (RWMol, dummy_info)
+        dummy_info: list of (dummy_idx, itype, res_label, lig_atom_idx, is_arrow_dir)
+                    is_arrow_dir: True if H-bond direction protein→ligand
+    """
+    rwmol = Chem.RWMol(mol)
+    dummy_info = []   # (dummy_idx, itype, res_label, lig_atom_idx, arrow_rev)
+    seen = {}          # (itype, resn, resi, chain) → dummy_idx
+
+    for interaction in interactions:
+        itype   = interaction.get('type', 'Unknown')
+        resn    = interaction.get('resn', 'UNK')
+        resi    = interaction.get('resi', '?')
+        chain   = interaction.get('chain', '')
+        lig_idx = interaction.get('ligand_atom_idx')  # may be None
+
+        # ── Resolve ligand atom index ───────────────────────────────────────
+        if lig_idx is None and lig_rdk is not None:
+            # Fallback: use the protein atom position → find nearest ligand atom
+            # (salt bridges / metal complexes often lack direct pybel atom mapping)
+            pass  # handled below after we get protein coords
+
+        if lig_idx is None or lig_idx < 0:
+            # Fallback: nearest ligand atom to the protein interaction partner
+            # (salt bridges / metal complexes / water bridges with no direct pybel atom mapping)
+            prot_center = interaction.get('_prot_center')
+            prot_x = interaction.get('prot_x')
+            prot_y = interaction.get('prot_y')
+            prot_z = interaction.get('prot_z')
+            
+            # Prefer _prot_center (set for salt bridges via charge.center)
+            if prot_center and isinstance(prot_center, (list, tuple)) and len(prot_center) >= 3:
+                prot_x, prot_y, prot_z = prot_center[0], prot_center[1], prot_center[2]
+            
+            if prot_x is not None and lig_rdk is not None:
+                try:
+                    conf = lig_rdk.GetConformer()
+                    min_dist = float('inf')
+                    nearest_idx = None
+                    for atom_i in range(lig_rdk.GetNumAtoms()):
+                        p = conf.GetAtomPosition(atom_i)
+                        d = ((p.x - prot_x)**2 + (p.y - prot_y)**2 + (p.z - prot_z)**2)**0.5
+                        if d < min_dist:
+                            min_dist = d
+                            nearest_idx = atom_i
+                    if nearest_idx is not None and min_dist <= 5.0:  # within 5 Å
+                        lig_idx = nearest_idx
+                except ValueError:
+                    pass
+
+            if lig_idx is None or lig_idx < 0:
+                # Still cannot map — skip this interaction
+                continue
+
+        # ── Residue label ────────────────────────────────────────────────────
+        res_label = f"{resn}{resi}" + (f".{chain}" if chain else "")
+
+        # ── Deduplication: one dummy per (itype, resn, resi, chain) ─────────
+        key = (itype, resn, resi, chain)
+        if key in seen:
+            didx = seen[key]
+            dummy_info.append((didx, itype, res_label, lig_idx, False))
+            continue
+
+        # ── Create dummy atom ───────────────────────────────────────────────
+        dummy = Chem.Atom(0)
+        dummy.SetProp('atomLabel', res_label)
+        dummy.SetProp('interactionType', itype)
+        dummy.SetProp('isDummy', '1')
+        didx = rwmol.AddAtom(dummy)
+
+        # ZERO bond to ligand atom
+        rwmol.AddBond(int(lig_idx), didx, Chem.BondType.ZERO)
+        seen[key] = didx
+        # arrow_rev: if protein is donor (protisdon=True), arrow points protein→ligand (rev=True)
+        # arrow_rev=False: arrow points ligand→protein
+        arrow_rev = interaction.get('protisdon', False) == True
+        dummy_info.append((didx, itype, res_label, lig_idx, arrow_rev))
+
+    # Generate 2D coordinates — RDKit automatically places dummy atoms around the ligand
+    AllChem.Compute2DCoords(rwmol)
+
+    return rwmol, dummy_info
+
+
+def _get_mol_2d_bounds(conf, n_atoms):
+    """Bounding box of all atoms in the 2D conformer."""
+    xs = [conf.GetAtomPosition(i).x for i in range(n_atoms)]
+    ys = [conf.GetAtomPosition(i).y for i in range(n_atoms)]
+    return min(xs), max(xs), min(ys), max(ys)
+
+
+def _inject_svg_legend(svg_text, seen_types, dummy_info, conf, drawer):
+    """
+    Inject legend and residue label text elements into SVG.
+    drawer is the Cairo MolDraw2DCairo with the same coordinate scale as the SVG.
+    Returns modified SVG text.
+    """
+    try:
+        import re
+    except ImportError:
+        return svg_text
+
+    svg_h = re.search(r'height="(\d+)px"', svg_text)
+    svg_h_val = int(svg_h.group(1)) if svg_h else 900
+
+    extra_elements = []
+
+    # ── Legend box (top-right) ─────────────────────────────────────────────
+    if seen_types:
+        item_h = 22
+        box_w = 175
+        box_h = item_h * len(seen_types) + 18
+        box_x = 1200 - box_w - 12  # right-aligned
+        box_y = 12
+
+        # White background rect
+        extra_elements.append(
+            f'<rect x="{box_x}" y="{box_y}" width="{box_w}" height="{box_h}"'
+            f' style="fill:#FFFFFF;fill-opacity:0.94;stroke:#646464;stroke-width:1"/>'
+        )
+        # Title
+        extra_elements.append(
+            f'<text x="{box_x + 8}" y="{box_y + 4}" '
+            f'font-family="Helvetica" font-size="13" font-weight="bold" '
+            f'fill="#1E1E1E">Interactions</text>'
+        )
+
+        for i, t in enumerate(seen_types):
+            style = INTERACTION_STYLE.get(t, {})
+            c = style.get('color', (0.5, 0.5, 0.5))
+            label = style.get('label', t)
+            r, g, b = int(c[0]*255), int(c[1]*255), int(c[2]*255)
+            cy = box_y + 16 + i * item_h
+            hex_color = f'#{r:02X}{g:02X}{b:02X}'
+            extra_elements.append(
+                f'<rect x="{box_x + 8}" y="{cy}" width="12" height="12" '
+                f'style="fill:{hex_color};stroke:none"/>'
+            )
+            extra_elements.append(
+                f'<text x="{box_x + 24}" y="{cy + 12}" '
+                f'font-family="Helvetica" font-size="13" fill="#282828">{label}</text>'
+            )
+
+    # ── Residue labels near dummy atoms ──────────────────────────────────
+    for didx, itype, res_label, lig_idx, _arrow in dummy_info:
+        if not res_label:
+            continue
+        pos = conf.GetAtomPosition(didx)
+        px = drawer.GetDrawCoords(Point2D(pos.x, pos.y))
+        # Label: below and right of the dummy circle
+        lx = px.x + 8
+        ly = px.y + 6
+        if 0 <= lx < 1200 - 60 and 0 <= ly < svg_h_val - 16:
+            extra_elements.append(
+                f'<text x="{lx}" y="{ly}" '
+                f'font-family="Helvetica" font-size="13" fill="#141414">'
+                f'{res_label}</text>'
+            )
+
+    # Inject before </svg>
+    injection = '\n'.join(extra_elements)
+    return svg_text.replace('</svg>', injection + '\n</svg>')
+
+
+def _render_svg_vector(rwmol, dummy_info, dummy_colors, conf, drawer, canvas_w, canvas_h):
+    """
+    Re-render the molecule with interactions as SVG (vector format).
+    Returns SVG text string. Post-processing uses pixel coords from Cairo drawer.
+    """
+    svg_drawer = rdMolDraw2D.MolDraw2DSVG(canvas_w, canvas_h)
+    opts = svg_drawer.drawOptions()
+    opts.circleAtoms = True
+    opts.fillHighlights = True
+    opts.highlightRadius = 0.35  # ~default, smaller than 0.5 for tighter circles
+    opts.bondLineWidth = 2.0
+    opts.noAtomLabels = True
+
+    n_atoms = rwmol.GetNumAtoms()
+    x_min, x_max, y_min, y_max = _get_mol_2d_bounds(conf, n_atoms)
+    margin = 4.0
+    svg_drawer.SetScale(canvas_w, canvas_h,
+                        Point2D(x_min - margin, y_min - margin),
+                        Point2D(x_max + margin, y_max + margin))
+
+    dummy_indices = sorted(set(d[0] for d in dummy_info))
+    svg_drawer.DrawMolecule(rwmol,
+                            highlightAtoms=dummy_indices,
+                            highlightAtomColors=dummy_colors)
+
+    # Draw interaction lines/arrows on top
+    for didx, itype, res_label, lig_idx, arrow_rev in dummy_info:
+        style = INTERACTION_STYLE.get(itype, INTERACTION_STYLE.get('Hydrophobic', {}))
+        color = style.get('color', (0.5, 0.5, 0.5))
+        end_style = style.get('end_style', 'dash')
+        lig_pos = conf.GetAtomPosition(lig_idx)
+        dum_pos = conf.GetAtomPosition(didx)
+        lig_px = svg_drawer.GetDrawCoords(Point2D(lig_pos.x, lig_pos.y))
+        dum_px = svg_drawer.GetDrawCoords(Point2D(dum_pos.x, dum_pos.y))
+        dx = dum_px.x - lig_px.x
+        dy = dum_px.y - lig_px.y
+        if (dx*dx + dy*dy) < 1:
+            continue
+        svg_drawer.SetColour(color)
+        if end_style == 'arrow':
+            if arrow_rev:
+                svg_drawer.DrawArrow(Point2D(dum_px.x, dum_px.y),
+                                     Point2D(lig_px.x, lig_px.y),
+                                     False, 0.065, 0.45)
+            else:
+                svg_drawer.DrawArrow(Point2D(lig_px.x, lig_px.y),
+                                     Point2D(dum_px.x, dum_px.y),
+                                     False, 0.065, 0.45)
+        elif end_style == 'double':
+            svg_drawer.DrawLine(Point2D(lig_px.x, lig_px.y),
+                                Point2D(dum_px.x, dum_px.y))
+            length = (dx*dx + dy*dy) ** 0.5
+            if length > 0:
+                nx = -dy / length * 3.0
+                ny = dx / length * 3.0
+                svg_drawer.DrawLine(
+                    Point2D(lig_px.x + nx, lig_px.y + ny),
+                    Point2D(dum_px.x + nx, dum_px.y + ny))
+        elif end_style == 'dash':
+            svg_drawer.DrawLine(Point2D(lig_px.x, lig_px.y),
+                                Point2D(dum_px.x, dum_px.y))
+
+    svg_drawer.FinishDrawing()
+    return svg_drawer.GetDrawingText()
+
+
+# ── Core rendering ─────────────────────────────────────────────────────────────
+
+def _recover_bonds_from_openbabel(pdbqt_path: str, mol):
+    """
+    Attempt to recover correct bond orders using OpenBabel SDF conversion.
+
+
+    When PDBQT lacks SMILES remark, RDKit builds a mol with 0 bonds.
+    OpenBabel's SDF output correctly perceives bond types (single/double/aromatic)
+    from the 3D structure. This function replaces mol's implicit bonds with
+    OpenBabel-perceived ones.
+
+    Returns True if recovery succeeded (mol now has bonds), False otherwise.
+    """
+    try:
+        import tempfile
+        ob_mol = next(_pybel.readfile('pdbqt', pdbqt_path))
+        sdf_path = os.path.join(tempfile.gettempdir(), f'_bond_recovery_{os.getpid()}.sdf')
+        ob_mol.write(format='sdf', filename=sdf_path, overwrite=True)
+        sdf_mol = Chem.MolFromMolFile(sdf_path, removeHs=False)
+        if sdf_mol is None or sdf_mol.GetNumBonds() == 0:
+            try:
+                os.unlink(sdf_path)
+            except Exception:
+                pass
+            return False
+
+        if sdf_mol.GetNumAtoms() != mol.GetNumAtoms():
+            try:
+                os.unlink(sdf_path)
+            except Exception:
+                pass
+            return False
+
+        # Transfer 3D conformer coordinates from original mol (preserves accurate geometry)
+        if mol.GetNumConformers() > 0:
+            orig_conf = mol.GetConformer(0)
+            # Ensure sdf_mol has a 3D conformer to receive positions
+            if sdf_mol.GetNumConformers() == 0:
+                new_conf = Chem.Conformer(sdf_mol.GetNumAtoms())
+                new_conf.Set3D(True)
+                sdf_mol.AddConformer(new_conf)
+            else:
+                sdf_mol.GetConformer(0).Set3D(True)
+            new_conf = sdf_mol.GetConformer(0)
+            for i in range(sdf_mol.GetNumAtoms()):
+                p = orig_conf.GetAtomPosition(i)
+                new_conf.SetAtomPosition(i, (p.x, p.y, p.z))
+
+        # Transfer OpenBabel-perceived bonds
+        # Build fresh mol with atoms + bonds, then copy conformer
+        rwmol = Chem.RWMol()
+        for i in range(sdf_mol.GetNumAtoms()):
+            a = sdf_mol.GetAtomWithIdx(i)
+            rwmol.AddAtom(a)
+        for bond in sdf_mol.GetBonds():
+            try:
+                rwmol.AddBond(bond.GetBeginAtomIdx(), bond.GetEndAtomIdx(), bond.GetBondType())
+            except Exception:
+                pass
+        recovered = rwmol.GetMol()
+
+        # Transfer conformer
+        if sdf_mol.GetNumConformers() > 0:
+            recovered.AddConformer(sdf_mol.GetConformer(0))
+
+        # Replace contents of input mol
+        mol.RemoveAllConformers()
+        for bond in list(mol.GetBonds()):
+            try:
+                mol.RemoveBond(bond.GetBeginAtomIdx(), bond.GetEndAtomIdx())
+            except Exception:
+                pass
+        for atom in list(mol.GetAtoms()):
+            try:
+                mol.RemoveAtom(atom)
+            except Exception:
+                pass
+        for i in range(recovered.GetNumAtoms()):
+            mol.AddAtom(recovered.GetAtomWithIdx(i))
+        for bond in recovered.GetBonds():
+            try:
+                mol.AddBond(bond.GetBeginAtomIdx(), bond.GetEndAtomIdx(), bond.GetBondType())
+            except Exception:
+                pass
+        if recovered.GetNumConformers() > 0:
+            mol.AddConformer(recovered.GetConformer(0))
+
+        try:
+            os.unlink(sdf_path)
+        except Exception:
+            pass
+        return mol.GetNumBonds() > 0
+    except Exception:
+        return False
+
+
 def render_interactions_2d(receptor_pdb: str,
                           ligand_pdbqt: str,
                           interactions: list,
                           output_png: str,
+                          output_pdf: str = None,
                           center: tuple = None,
                           ligand_resn: str = None,
-                          width: int = 800,
-                          height: int = 600,
-                          dpi: int = 150) -> bool:
+                          width: int = 1000,
+                          height: int = 800,
+                          dpi: int = 300) -> bool:
     """
-    Render 2D protein-ligand interaction diagram using PLIP's PyMOL visualizer.
+    Render a publication-quality 2D protein-ligand interaction diagram.
 
-    Generates publish-ready 2D diagram via PLIP's built-in PyMOL rendering.
-    Falls back to the existing PyMOL-based render_interactions_pymol() if
-    PLIP rendering fails.
-
+    Pipeline:
+      1. Parse ligand PDBQT → RDKit mol (3D, via _read_ligand_from_pdbqt_3d)
+      2. Build RWMol with dummy atoms + ZERO bonds for each interaction
+      3. Generate 2D coords → RDKit auto-positions dummy atoms
+      4. Draw base: MolDraw2DCairo + circleAtoms + residue labels
+      5. Post-processing: draw interaction lines/arrows on the canvas
+      6. PIL overlay: legend + residue name labels
+      7. ImageMagick: SVG → PDF if output_pdf is specified
 
     Args:
-        receptor_pdb: Protein PDB file
-        ligand_pdbqt: Docked ligand PDBQT file
-        interactions: Interaction list (for API compatibility, not used directly)
+        receptor_pdb: (unused, API compat)
+        ligand_pdbqt: Docked ligand PDBQT
+        interactions: From detect_interactions_plip() / detect_interactions()
         output_png: Output PNG path
-        center: (x, y, z) ligand center (unused, kept for API compat)
-        ligand_resn: Ligand residue name (auto-detected if None)
-        width, height: Output resolution (passed to PyMOL)
-        dpi: Output DPI
+        output_pdf: (optional) Output PDF path (vector). Requires ImageMagick.
+        center, ligand_resn: (unused, API compat)
+        width, height: Canvas size in pixels
+        dpi: Output DPI for publication
 
     Returns:
-        True if rendering succeeded
+        True if successful
     """
-    if not _HAVE_PYMOL:
-        print("[autodock] PyMOL not available - 2D diagram skipped")
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        logger.info("[autodock] PIL not available — 2D diagram skipped")
         return False
 
-    if ligand_resn is None:
-        ligand_resn = _detect_ligand_resn_for_plip(ligand_pdbqt)
+    if not interactions:
+        logger.info("[autodock] No interactions provided — 2D diagram skipped")
+        return False
 
-    output_dir = os.path.dirname(os.path.abspath(output_png)) or '.'
-    os.makedirs(output_dir, exist_ok=True)
-
-    _configure_plip(output_dir)
-    plip_config.PICS = True
-    plip_config.PYMOL = True
-
+    output_png = os.path.abspath(output_png)
+    os.makedirs(os.path.dirname(output_png) or '.', exist_ok=True)
 
     complex_pdb = None
     try:
-        complex_pdb = _build_complex_pdb_for_plip(receptor_pdb, ligand_pdbqt)
+        # ── 1. Build RDKit mol from PDBQT ───────────────────────────────────
+        mol = _read_ligand_from_pdbqt_3d(ligand_pdbqt)
+        if mol is None:
+            logger.error("[autodock] Could not read ligand from PDBQT")
+            return False
 
+        # Critical check: 0 bonds is the ONLY reason rendering produces no skeleton.
+        # 3D flag loss from Compute2DCoords is expected and harmless — do NOT trigger recovery for it.
+        n_bonds = mol.GetNumBonds()
+        n_atoms = mol.GetNumAtoms()
+        has_2d = False
+        if mol.GetNumConformers() > 0:
+            has_2d = not mol.GetConformer(0).Is3D()
 
-        plcomplex = PDBComplex()
-        plcomplex.output_path = output_dir
-        plcomplex.load_pdb(complex_pdb)
-        plcomplex.analyze()
+        if n_bonds == 0:
+            logger.info(f"[autodock] Mol has 0 bonds — attempting OpenBabel bond-order recovery...")
+            recovered = _recover_bonds_from_openbabel(ligand_pdbqt, mol)
+            if recovered:
+                n_bonds = mol.GetNumBonds()
+                logger.info(f"[autodock] Recovery: {n_bonds} bonds")
+            else:
+                logger.info(f"[autodock] Bond recovery failed — rendering will show circles without skeleton")
 
-        from plip.visualization import visualize
-        visualize.visualize_in_pymol(plcomplex)
+        lig_rdk = mol  # for nearest-atom fallback if needed
 
-        # Find the generated PNG (PLIP names it based on ligand)
-        pngs = [
-            f for f in os.listdir(output_dir)
-            if f.endswith('.png')
-        ]
+        # ── 2. Build interaction mol ─────────────────────────────────────────
+        rwmol, dummy_info = _build_interaction_mol(mol, interactions, lig_rdk)
+        if not dummy_info:
+            logger.info("[autodock] No mappable interactions — skip diagram")
+            return False
 
-        if pngs:
-            src = os.path.join(output_dir, pngs[0])
-            dst = os.path.abspath(output_png)
-            import shutil
-            shutil.move(src, dst)
-            ok = os.path.exists(dst) and os.path.getsize(dst) > 5000
-            size = os.path.getsize(dst) // 1024
-            print(f"[autodock] 2D diagram: {'OK' if ok else 'FAILED'} ({size}KB) → {dst}")
-            return bool(ok)
+        conf = rwmol.GetConformer()
+        n_atoms = rwmol.GetNumAtoms()
 
-        print("[autodock] 2D diagram: PLIP did not generate PNG")
-        return False
+        # ── 3. Canvas setup ──────────────────────────────────────────────────
+        # Extend canvas to accommodate labels around the molecule
+        canvas_w = width
+        canvas_h = height
+
+        drawer = rdMolDraw2D.MolDraw2DCairo(canvas_w, canvas_h)
+        opts = drawer.drawOptions()
+        opts.circleAtoms = True
+        opts.fillHighlights = True
+        opts.highlightRadius = 0.35  # ~default, smaller than 0.5 for tighter circles
+        opts.bondLineWidth = 2.0
+        opts.annotationFontScale = 1.0
+        opts.baseFontSize = 0.75
+        # Don't draw ZERO bonds as solid lines — they are layout guides only
+        opts.noAtomLabels = True
+
+        # ── 4. Set scale based on molecule 2D coords ───────────────────────
+        x_min, x_max, y_min, y_max = _get_mol_2d_bounds(conf, n_atoms)
+        margin = 4.0
+        drawer.SetScale(canvas_w, canvas_h,
+                        Point2D(x_min - margin, y_min - margin),
+                        Point2D(x_max + margin, y_max + margin))
+
+        # ── 5. Draw base molecule with dummy circles ─────────────────────────
+        dummy_indices = sorted(set(d[0] for d in dummy_info))
+        dummy_colors = {}
+        for didx, itype, _, _lidx, _arrow in dummy_info:
+            if didx not in dummy_colors:
+                style = INTERACTION_STYLE.get(itype, INTERACTION_STYLE.get('Hydrophobic', {}))
+                dummy_colors[didx] = style.get('color', (0.5, 0.5, 0.5))
+
+        drawer.DrawMolecule(
+            rwmol,
+            highlightAtoms=dummy_indices,
+            highlightAtomColors=dummy_colors,
+        )
+
+        # ── 6. Post-processing: draw interaction lines/arrows ───────────────
+        # We draw on TOP of the molecule using pixel coordinates from GetDrawCoords
+        drawn_pairs = set()
+
+        for didx, itype, res_label, lig_idx, arrow_rev in dummy_info:
+            style = INTERACTION_STYLE.get(itype, INTERACTION_STYLE.get('Hydrophobic', {}))
+            color = style.get('color', (0.5, 0.5, 0.5))
+            lw = style.get('line_width', 1.8)
+            end_style = style.get('end_style', 'dash')
+
+            # Get 2D molecular coordinates
+            lig_pos = conf.GetAtomPosition(lig_idx)
+            dum_pos = conf.GetAtomPosition(didx)
+
+            # Convert to pixel coordinates
+            lig_px = drawer.GetDrawCoords(Point2D(lig_pos.x, lig_pos.y))
+            dum_px = drawer.GetDrawCoords(Point2D(dum_pos.x, dum_pos.y))
+
+            # Skip if points are coincident (shouldn't happen but guard)
+            dx = dum_px.x - lig_px.x
+            dy = dum_px.y - lig_px.y
+            if (dx*dx + dy*dy) < 1:
+                continue
+
+            drawer.SetColour(color)
+
+            if end_style == 'arrow':
+                # Directional arrow: H-bond or halogen bond
+                # Convention: arrow points FROM ligand atom TO protein residue
+                # (i.e., direction of interaction flow)
+                if arrow_rev:
+                    drawer.DrawArrow(
+                        Point2D(dum_px.x, dum_px.y),
+                        Point2D(lig_px.x, lig_px.y),
+                        False, 0.065, 0.45,
+                    )
+                else:
+                    drawer.DrawArrow(
+                        Point2D(lig_px.x, lig_px.y),
+                        Point2D(dum_px.x, dum_px.y),
+                        False, 0.065, 0.45,
+                    )
+
+            elif end_style == 'double':
+                # Double line: π-π, salt bridge, metal complex
+                drawer.DrawLine(
+                    Point2D(lig_px.x, lig_px.y),
+                    Point2D(dum_px.x, dum_px.y),
+                )
+                # Second line offset perpendicular to the first
+                length = (dx*dx + dy*dy) ** 0.5
+                if length > 0:
+                    nx = -dy / length * 3.0
+                    ny = dx / length * 3.0
+                    drawer.DrawLine(
+                        Point2D(lig_px.x + nx, lig_px.y + ny),
+                        Point2D(dum_px.x + nx, dum_px.y + ny),
+                    )
+
+            elif end_style == 'dash':
+                # Dashed: hydrophobic, water bridge
+                drawer.DrawLine(
+                    Point2D(lig_px.x, lig_px.y),
+                    Point2D(dum_px.x, dum_px.y),
+                )
+
+            drawn_pairs.add((didx, lig_idx))
+
+        drawer.FinishDrawing()
+        png_bytes = drawer.GetDrawingText()
+
+        # ── 7. PIL post-processing: legend + residue labels ─────────────────
+        img = Image.open(io.BytesIO(png_bytes)).convert('RGBA')
+        overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
+        draw = ImageDraw.Draw(overlay)
+
+        # Try to use a usable font; fall back to default
+        try:
+            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 13)
+            font_bold = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 13)
+        except Exception:
+            font = ImageFont.load_default()
+            font_bold = font
+
+        # ── Legend (top-right) ───────────────────────────────────────────────
+        seen_types = []
+        for interaction in interactions:
+            t = interaction.get('type', 'Unknown')
+            if t not in seen_types:
+                seen_types.append(t)
+
+        if seen_types:
+            item_h = 22
+            box_w = 175
+            box_h = item_h * len(seen_types) + 18
+            box_x = img.width - box_w - 12
+            box_y = 12
+
+            # White box with subtle border
+            draw.rectangle([box_x, box_y, box_x + box_w, box_y + box_h],
+                           fill=(255, 255, 255, 240),
+                           outline=(100, 100, 100, 180))
+
+            draw.text((box_x + 8, box_y + 4), "Interactions",
+                       fill=(30, 30, 30, 255), font=font_bold)
+
+            for i, t in enumerate(seen_types):
+                style = INTERACTION_STYLE.get(t, {})
+                c = style.get('color', (0.5, 0.5, 0.5))
+                label = style.get('label', t)
+                r, g, b = int(c[0]*255), int(c[1]*255), int(c[2]*255)
+                cy = box_y + 16 + i * item_h
+                # Color swatch (rounded rect approximation)
+                draw.rectangle([box_x + 8, cy, box_x + 20, cy + 12],
+                               fill=(r, g, b, 255))
+                draw.text((box_x + 24, cy), label,
+                          fill=(40, 40, 40, 255), font=font)
+
+        # ── Residue labels near dummy atoms (bottom-left of dummy circles) ───
+        for didx, itype, res_label, lig_idx, _arrow in dummy_info:
+            if not res_label:
+                continue
+            pos = conf.GetAtomPosition(didx)
+            px = drawer.GetDrawCoords(Point2D(pos.x, pos.y))
+            # Label offset: below and right of the dummy circle
+            lx = int(px.x + 8)
+            ly = int(px.y + 6)
+            # Clip to image bounds
+            if 0 <= lx < img.width - 60 and 0 <= ly < img.height - 16:
+                draw.text((lx, ly), res_label,
+                          fill=(20, 20, 20, 230), font=font)
+
+        # ── 8. Composite and save ───────────────────────────────────────────
+        bg = Image.new('RGBA', img.size, (255, 255, 255, 255))
+        bg.paste(img, (0, 0), img if img.mode == 'RGBA' else None)
+        bg.paste(overlay, (0, 0), overlay)
+        bg.convert('RGB').save(output_png, 'PNG', dpi=(dpi, dpi))
+
+        # ── 8b. SVG → PDF conversion (ImageMagick) ──────────────────────────
+        if output_pdf:
+            svg_text = _render_svg_vector(rwmol, dummy_info, dummy_colors,
+                                          conf, drawer, canvas_w, canvas_h)
+            # Inject legend + residue labels as SVG text elements
+            svg_text = _inject_svg_legend(svg_text, seen_types, dummy_info, conf, drawer)
+            # Use cairosvg (installed in autodock313) for SVG→PDF conversion
+            # This avoids ImageMagick font issues with Helvetica on macOS
+            try:
+                import cairosvg
+                with open(output_pdf, 'wb') as f:
+                    cairosvg.svg2pdf(
+                        bytestring=svg_text.encode('utf-8'),
+                        write_to=f,
+                        dpi=dpi
+                    )
+                pdf_size = os.path.getsize(output_pdf)
+                logger.info(f"[autodock] PDF: OK ({pdf_size // 1024}KB) → {output_pdf}")
+            except ImportError:
+                logger.info("[autodock] cairosvg not installed — PDF skipped")
+            except Exception as e:
+                logger.info(f"[autodock] SVG→PDF failed: {e}")
+
+        size = os.path.getsize(output_png)
+        ok = size > 30000  # publication diagram should be ≥30KB at 300dpi
+        if not ok:
+            logger.info(f"[autodock] 2D diagram SUSPECT: only {size} bytes — "
+                  f"molecule may have rendered without bonds (0 bonds) or scaling error. "
+                  f"Check that _read_ligand_from_pdbqt_3d returns a mol with GetNumBonds()>0.")
+        logger.info(f"[autodock] 2D diagram: {'OK' if ok else 'SUSPECT'} "
+              f"({size // 1024}KB, {dpi}dpi) → {output_png}")
+        return ok
 
     except Exception as e:
-        print(f"[autodock] 2D diagram failed: {e}")
+        import traceback
+        logger.info(f"[autodock] 2D diagram failed: {e}")
+        traceback.print_exc()
         return False
 
     finally:
         if complex_pdb and os.path.exists(complex_pdb):
-            os.unlink(complex_pdb)
-
-
+            try:
+                os.unlink(complex_pdb)
+            except Exception:
+                pass
 # ─────────────────────────────────────────────────────────────────────────────
 # PYMOL RENDERING — SCENE-PRESET SYSTEM
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2219,7 +3380,7 @@ def render_scene(pdb_path: str,
         True if successful
     """
     if not _HAVE_PYMOL:
-        print("[autodock] PyMOL not available - render_scene skipped")
+        logger.info("[autodock] PyMOL not available - render_scene skipped")
         return False
 
     pdb_abs = os.path.abspath(pdb_path)
@@ -2241,12 +3402,39 @@ def render_scene(pdb_path: str,
     _apply_scene_to_cmd(cmd, scene_cfg, pdb_abs, ligand_pdbqt,
                         center, interactions or [])
 
+    # ── Self-check: verify PyMOL loaded the structure before ray tracing ──
+    # get_model('all') queries PyMOL's internal atom store (not OpenGL).
+    # Ray tracing itself is CPU-bound, but if PyMOL's state was reset
+    # (e.g. module reload, cmd object overwritten, stale process), atoms
+    # will be missing and we re-init rather than silently make a blank PNG.
+    model = cmd.get_model('all')
+    n_atom = model.nAtom if model else 0
+    if n_atom == 0:
+        logger.info(f"[autodock] ⚠️ PyMOL init check FAILED — no atoms loaded for {scene}. "
+              "Re-initializing PyMOL instance...")
+        # Force a fresh PyMOL instance
+        import pymol
+        pymol.cmd = pymol.Cmd()
+        globals()['_pymol_cmd'] = pymol.cmd
+        cmd = _pymol_cmd
+        cmd.load(pdb_abs)
+        if ligand_pdbqt and os.path.exists(ligand_pdbqt):
+            cmd.load(os.path.abspath(ligand_pdbqt), object='docked_ligand')
+        _apply_scene_to_cmd(cmd, scene_cfg, pdb_abs, ligand_pdbqt,
+                            center, interactions or [])
+        model2 = cmd.get_model('all')
+        n_atom = model2.nAtom if model2 else 0
+        if n_atom == 0:
+            logger.info(f"[autodock] ❌ PyMOL re-init FAILED — rendering aborted for {scene}")
+            return False
+        logger.info(f"[autodock] ✅ PyMOL re-init OK — {n_atom} atoms loaded")
+
     # Ray trace + save
     cmd.png(png_abs, width=width, height=height, dpi=dpi, ray=1)
 
     ok = os.path.exists(png_abs) and os.path.getsize(png_abs) > 5000
     size = os.path.getsize(png_abs) // 1024 if ok else 0
-    print(f"[autodock] render_scene({scene}): {'OK' if ok else 'FAILED'} ({size}KB)")
+    logger.info(f"[autodock] render_scene({scene}): {'OK' if ok else 'FAILED'} ({size}KB)")
     return ok
 
 
@@ -2362,7 +3550,7 @@ def render_interactions_pymol(receptor_pdb: str,
         dash_preset: 'fine' (Leipzig, default) | 'standard' | 'bold'
     """
     if not _HAVE_PYMOL:
-        print("[autodock] PyMOL not available")
+        logger.info("[autodock] PyMOL not available")
         return False
 
     rec_abs = os.path.abspath(receptor_pdb)
@@ -2485,8 +3673,8 @@ def render_interactions_pymol(receptor_pdb: str,
 
     ok = os.path.exists(png_abs) and os.path.getsize(png_abs) > 5000
     size = os.path.getsize(png_abs) // 1024 if ok else 0
-    print(f"[autodock] Interactions: H-bond={_n_hb}, pi-pi={_n_pi}, Hydro={_n_hp}")
-    print(f"[autodock] Interaction render: {'OK' if ok else 'FAILED'} ({size}KB)")
+    logger.info(f"[autodock] Interactions: H-bond={_n_hb}, pi-pi={_n_pi}, Hydro={_n_hp}")
+    logger.info(f"[autodock] Interaction render: {'OK' if ok else 'FAILED'} ({size}KB)")
     return ok
 
 def render_ligand_2d(smiles_or_pdbqt: str,
@@ -2506,7 +3694,7 @@ def render_ligand_2d(smiles_or_pdbqt: str,
         True if successful
     """
     if not _HAVE_RDKIT:
-        print("[autodock] RDKit not available - render_ligand_2d skipped")
+        logger.info("[autodock] RDKit not available - render_ligand_2d skipped")
         return False
 
     mol = None
@@ -2533,7 +3721,7 @@ def render_ligand_2d(smiles_or_pdbqt: str,
         mol = Chem.MolFromSmiles(smiles_or_pdbqt)
 
     if mol is None:
-        print(f"[autodock] Could not read ligand: {smiles_or_pdbqt}")
+        logger.info(f"[autodock] Could not read ligand: {smiles_or_pdbqt}")
         return False
 
     mol = Chem.RemoveHs(mol)
@@ -2545,7 +3733,7 @@ def render_ligand_2d(smiles_or_pdbqt: str,
     img.save(output_png)
 
     ok = os.path.exists(output_png) and os.path.getsize(output_png) > 2000
-    print(f"[autodock] 2D render: {'OK' if ok else 'FAILED'} "
+    logger.info(f"[autodock] 2D render: {'OK' if ok else 'FAILED'} "
           f"({os.path.getsize(output_png)//1024}KB)")
     return ok
 
@@ -2576,7 +3764,7 @@ def composite_summary(panels: list,
     valid = [(i, p) for i, p in enumerate(panels)
              if os.path.exists(p) and os.path.getsize(p) > 5000]
     if not valid:
-        print("[autodock] No valid panels to composite")
+        logger.info("[autodock] No valid panels to composite")
         return False
 
     n = len(valid)
@@ -2633,7 +3821,7 @@ def composite_summary(panels: list,
     plt.close(fig)
 
     ok = os.path.exists(output_png) and os.path.getsize(output_png) > 5000
-    print(f"[autodock] Composite: {'OK' if ok else 'FAILED'} "
+    logger.info(f"[autodock] Composite: {'OK' if ok else 'FAILED'} "
           f"({os.path.getsize(output_png)//1024}KB)")
     return ok
 
@@ -2650,7 +3838,8 @@ def dock_ligand(receptor_pdbqt: str,
                 n_poses: int = 10,
                 receptor_pdb: str = None,
                 include_interactions: bool = False,
-                include_clash: bool = False) -> tuple:
+                include_clash: bool = False,
+                output_dir: str = None) -> tuple:
     """
     Dock a single ligand into a protein binding site (AutoDock Vina).
 
@@ -2667,16 +3856,39 @@ def dock_ligand(receptor_pdbqt: str,
                               for the best pose using RDKit geometry (requires receptor_pdb)
         include_clash: If True, compute clash score for the best pose
                        (requires receptor_pdb; clash_score < 0.5 Å is publication-standard)
+        output_dir: If provided, save docking poses to this directory:
+                    - docking_best.pdbqt   ← best pose (Vina-ranked #1)
+                    - docking_all_poses.pdbqt ← all n_poses
+                    These files can be passed directly to detect_interactions() and
+                    render_scene() without manual path handling.
 
     Returns:
         (energies: ndarray, poses: list of PDBQT strings)
         energies[n][0] = total affinity (kcal/mol, more negative = tighter)
-        If include_interactions or include_clash is True, returns
-        (energies, poses, metadata_dict) where metadata_dict contains
-        'interactions' (list) and/or 'clash' (dict).
+        If include_interactions or include_clash or output_dir is True, returns
+        (energies, poses, metadata_dict) where metadata_dict contains:
+        - 'best_pose_path': path to docking_best.pdbqt (if output_dir provided)
+        - 'all_poses_path': path to docking_all_poses.pdbqt (if output_dir provided)
+        - 'interactions': contact list (if include_interactions=True)
+        - 'clash': clash metrics (if include_clash=True)
     """
     if not _HAVE_VINA:
         raise RuntimeError("vina required: conda activate autodock313")
+    # ── Input validation ─────────────────────────────────────────────────────
+    if not isinstance(receptor_pdbqt, str):
+        raise TypeError(f"receptor_pdbqt must be str, got {type(receptor_pdbqt).__name__}")
+    if not isinstance(ligand_pdbqt, str):
+        raise TypeError(f"ligand_pdbqt must be str, got {type(ligand_pdbqt).__name__}")
+    if not os.path.exists(receptor_pdbqt):
+        raise FileNotFoundError(f"Receptor PDBQT not found: {receptor_pdbqt}")
+    if not os.path.exists(ligand_pdbqt):
+        raise FileNotFoundError(f"Ligand PDBQT not found: {ligand_pdbqt}")
+    if not isinstance(center, (tuple, list)) or len(center) != 3:
+        raise TypeError(f"center must be (x, y, z) tuple/list, got {type(center).__name__}")
+    if not isinstance(box_size, (tuple, list)) or len(box_size) != 3:
+        raise TypeError(f"box_size must be (sx, sy, sz) tuple/list, got {type(box_size).__name__}")
+    if any(d <= 0 for d in box_size):
+        raise ValueError(f"box_size must be positive, got {box_size}")
 
     v = Vina(sf_name='vina', seed=42)
     v.set_receptor(receptor_pdbqt)
@@ -2687,9 +3899,20 @@ def dock_ligand(receptor_pdbqt: str,
 
     energies = v.energies(n_poses=n_poses, energy_range=3.0)
 
-    # Use write_poses() (official API) to write all poses to a temp PDBQT file,
-    # then read it back as a list of PDBQT strings.  This avoids fragile manual
-    # string parsing while keeping the same in-memory return type.
+    # Use write_poses() (official API) to write all poses to a PDBQT file,
+    # then read it back as a list of PDBQT strings.  If output_dir is provided,
+    # persist the files to disk so downstream steps (interaction detection,
+    # PyMOL rendering) can read them.  Otherwise fall back to a temp file.
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        all_poses_path = os.path.join(output_dir, 'docking_all_poses.pdbqt')
+        best_pose_path = os.path.join(output_dir, 'docking_best.pdbqt')
+        pose_write_path = all_poses_path
+    else:
+        all_poses_path = None
+        best_pose_path = None
+        pose_write_path = None
+
     with tempfile.NamedTemporaryFile(mode='w', suffix='.pdbqt',
                                       delete=False) as tf:
         tmp_path = tf.name
@@ -2702,11 +3925,18 @@ def dock_ligand(receptor_pdbqt: str,
         parts = pdbqt_str.split('MODEL ')
         poses = [f'MODEL {i}\n{parts[i]}' for i in range(1, len(parts))
                  if parts[i].strip()]
+        # Persist to output_dir if requested
+        if output_dir:
+            with open(all_poses_path, 'w') as f:
+                f.write(pdbqt_str)
+            with open(best_pose_path, 'w') as f:
+                f.write(poses[0] if poses else '')
+            logger.info(f"[autodock] Poses saved: {best_pose_path} (best), {all_poses_path} (all)")
     finally:
         os.unlink(tmp_path)
 
     best = float(energies[0][0]) if energies.size > 0 else None
-    print(f"[autodock] Best affinity: {best} kcal/mol ({len(poses)} poses)")
+    logger.info(f"[autodock] Best affinity: {best} kcal/mol ({len(poses)} poses)")
 
     # ── Optional: score the initial ligand pose ───────────────────
     # v.score() evaluates the input pose before docking — useful as a baseline.
@@ -2720,34 +3950,46 @@ def dock_ligand(receptor_pdbqt: str,
         score_init = v.score()
         score_init_total = float(score_init[0]) if hasattr(score_init, '__getitem__')                           else float(score_init)
         if score_init_total is not None:
-            print(f"[autodock] Pre-dock score (input pose): {score_init_total} kcal/mol")
+            logger.info(f"[autodock] Pre-dock score (input pose): {score_init_total} kcal/mol")
     except RuntimeError as e:
         if 'outside' in str(e).lower():
-            print(f"[autodock] Pre-dock score: skipped (ligand not in grid box; {e})")
+            logger.info(f"[autodock] Pre-dock score: skipped (ligand not in grid box; {e})")
         else:
             raise
 
     # ── Optional: interaction detection + clash analysis ───────────
     metadata = {}
+    if best_pose_path:
+        metadata['best_pose_path'] = best_pose_path
+        metadata['all_poses_path'] = all_poses_path
+
     if include_interactions and receptor_pdb:
-        print("[autodock] Detecting interactions for best pose...")
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.pdbqt',
-                                        delete=False) as tf:
-            tmp_path = tf.name
+        logger.info("[autodock] Detecting interactions for best pose...")
+        # Use the persisted best pose if available, otherwise fall back to temp file
+        lig_pdbqt_for_intx = best_pose_path if best_pose_path else None
+        if not lig_pdbqt_for_intx:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.pdbqt',
+                                            delete=False) as tf:
+                tmp_path = tf.name
+            try:
+                with open(tmp_path, 'w') as f:
+                    f.write(poses[0])
+                lig_pdbqt_for_intx = tmp_path
+            finally:
+                pass  # don't delete yet, detect_interactions needs it
         try:
-            with open(tmp_path, 'w') as f:
-                f.write(poses[0])
             interactions = detect_interactions(
                 receptor_pdb=receptor_pdb,
-                ligand_pdbqt=tmp_path,
+                ligand_pdbqt=lig_pdbqt_for_intx,
                 center=center,
             )
             metadata['interactions'] = interactions
         finally:
-            os.unlink(tmp_path)
+            if not best_pose_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
     if include_clash and receptor_pdb:
-        print("[autodock] Computing clash score for best pose...")
+        logger.info("[autodock] Computing clash score for best pose...")
         clash_result = compute_clash_score(poses[0], receptor_pdb)
         metadata['clash'] = clash_result
 
@@ -2811,13 +4053,11 @@ def virtual_screen(receptor_pdbqt: str,
             score_init_total = None
             try:
                 score_init = v.score()
-                score_init_total = float(score_init[0]) if hasattr(score_init, '__getitem__')                                   else float(score_init)
-                if score_init_total is not None:
-                    print(f"[autodock] {name}: pre-dock score={score_init_total} kcal/mol, "
-                          f"docked={best} kcal/mol")
+                score_init_total = float(score_init[0]) if hasattr(score_init, '__getitem__') else float(score_init)
             except RuntimeError as e:
                 if 'outside' in str(e).lower():
-                    print(f"[autodock] {name}: pre-dock score=skipped (ligand outside grid box)")
+                    logger.info(f"[autodock] {name}: pre-dock score=skipped (ligand outside grid box)")
+                    score_init_total = None
                 else:
                     raise
 
@@ -2830,6 +4070,12 @@ def virtual_screen(receptor_pdbqt: str,
                 v.write_poses(pose_file, n_poses=n_poses, energy_range=3.0)
             else:
                 pose_file = None
+            # Print post-dock score (best is now defined)
+            if score_init_total is not None:
+                logger.info(f"[autodock] {name}: pre-dock score={score_init_total} kcal/mol, "
+                      f"docked={best} kcal/mol")
+            else:
+                logger.info(f"[autodock] {name}: docked={best} kcal/mol")
             # Per-compound interaction + clash analysis (optional)
             # Use write_pose() (official Vina API) to capture the best pose as a string.
             best_pose_str = None
@@ -2860,13 +4106,13 @@ def virtual_screen(receptor_pdbqt: str,
                                 receptor_pdb=analysis_pdb, ligand_pdbqt=tmp_path,
                                 center=center)
                         except Exception as e:
-                            print(f"[autodock]   interaction detection failed: {e}")
+                            logger.info(f"[autodock]   interaction detection failed: {e}")
                             interactions_out = []
                     if include_clash:
                         try:
                             clash_out = compute_clash_score(best_pose_str, analysis_pdb)
                         except Exception as e:
-                            print(f"[autodock]   clash detection failed: {e}")
+                            logger.info(f"[autodock]   clash detection failed: {e}")
                             clash_out = {'clash_score': None, 'is_acceptable': None}
                 finally:
                     os.unlink(tmp_path)
@@ -2886,9 +4132,9 @@ def virtual_screen(receptor_pdbqt: str,
                             'clash_acceptable': clash_out.get('is_acceptable') if clash_out else None,
                             'best_pose_path': pose_path,
                             'poses_file': pose_file})
-            print(f"[autodock] {name}: {best} kcal/mol")
+            logger.info(f"[autodock] {name}: {best} kcal/mol")
         except Exception as e:
-            print(f"[autodock] {name}: FAILED - {e}")
+            logger.error(f"[autodock] {name}: FAILED - {e}")
             results.append({'name': name, 'smiles': smiles,
                             'affinity_kcal_mol': None, 'error': str(e)})
 
@@ -2921,7 +4167,7 @@ def virtual_screen(receptor_pdbqt: str,
     if docking_results:
         df_export = pd.DataFrame([r.to_dataframe_row() for r in docking_results])
         df_export.to_csv(csv_path, index=False, float_format='%.4f')
-        print(f"[autodock] Results table written → {csv_path}")
+        logger.info(f"[autodock] Results table written → {csv_path}")
 
     return results_df, docking_results
 

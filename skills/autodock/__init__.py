@@ -45,17 +45,30 @@ from autodock._structure_fetch import (
     fetch_molecule_chembl,
     fetch_molecule_cactus,
     fetch_molecule_drugbank,
+    clear_cache,
+    get_cache_info,
 )
 
 from autodock._autodock import (
+    # Logger (for CLI control)
+    autodock_logger,
     # Docking
     prepare_receptor,
     prepare_ligand,
+    prepare_ligand_conformers,
     find_binding_site,
+    find_top_pockets,
     dock_ligand,
+    dock_ligand_multi,
+    dock_ligand_multi_conformer,
     virtual_screen,
+    compute_clash_score,
+    compute_rmsd,
+    validate_docking_protocol,
     # Interaction detection
     detect_interactions,
+    detect_interactions_plip,
+    render_interactions_2d,
     # Visualization (primary API)
     render_scene,
     # Specialized renderers
@@ -70,11 +83,20 @@ __all__ = [
     # Docking workflow
     'prepare_receptor',
     'prepare_ligand',
+    'prepare_ligand_conformers',
     'find_binding_site',
+    'find_top_pockets',
     'dock_ligand',
+    'dock_ligand_multi',
+    'dock_ligand_multi_conformer',
     'virtual_screen',
+    'compute_clash_score',
+    'compute_rmsd',
+    'validate_docking_protocol',
     # Interaction analysis
     'detect_interactions',
+    'detect_interactions_plip',
+    'render_interactions_2d',
     # Visualization (primary)
     'render_scene',
     # Specialized renderers
@@ -97,6 +119,11 @@ __all__ = [
     # Scene presets
     'SCENE_PRESETS',
     'get_scene_preset',
+    # Logger (for CLI control)
+    'autodock_logger',
+    # Cache management
+    'clear_cache',
+    'get_cache_info',
     # Parameter presets (for advanced users)
     'DASH_PRESETS',
     'DASH_COLOR_MAP',
