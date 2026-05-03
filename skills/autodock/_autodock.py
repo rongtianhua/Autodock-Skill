@@ -831,7 +831,7 @@ def _read_ligand_from_pdbqt_3d(pdbqt_path: str):
                 # Primary: col77-78 (PDBQT standard, element symbol right-justified in 2 chars).
                 # For ADT-generated PDBQTs, atom name = 'C.1', 'N.5', 'Cl.6' etc.
                 # Take FIRST CHARACTER of atom name (col12) as element when needed.
-                elem = line[77:79].strip().capitalize()
+                elem = line[78:80].strip().capitalize()
                 if not elem or elem in ('H', 'D'):
                     # Fallback to first char of atom name for types like 'C.1', 'N.5', 'Cl.6'
                     elem = line[12:13].strip().capitalize()
@@ -986,30 +986,35 @@ def compute_rmsd(docked_pdbqt: str,
     """
     Compute RMSD between a docked pose and its crystal reference.
 
-    Uses RDKit AllChem.AlignMol() for optimal superposition (Kabsch algorithm)
-    before RMSD calculation — the publication-standard approach.
+    Uses rdMolAlign.GetBestRMS() for optimal superposition (Kabsch algorithm)
+    before RMSD calculation — the publication-standard approach (CASF-2013).
+
+    When the docked and reference molecules have different atom counts
+    (e.g. different protonation states), uses Maximum Common Substructure
+    (MCS) alignment to restrict RMSD to the shared scaffold.
 
     Args:
-        docked_pdbqt:   PDBQT file from Vina docking output
-        reference_pdbqt: Crystal / reference PDBQT file
-        method:         'atom'   = atom-to-atom RMSD after optimal superposition
-                        'com'    = center-of-mass RMSD
-                        'both'   = return (atom_rmsd, com_rmsd)
+        docked_pdbqt:     PDBQT file from Vina docking output
+        reference_pdbqt:  Crystal / reference PDBQT file
+        method:           'atom' = atom-to-atom RMSD after optimal superposition
+                           'com'  = center-of-mass RMSD
+                           'both'  = return (atom_rmsd, com_rmsd)
 
     Returns:
-        float RMSD in Å. Returns None on parse error.
+        float RMSD in Å. Returns None when molecules have no common
+        scaffold (atom count differs AND MCS < 3 shared atoms).
         For method='both': returns (atom_rmsd, com_rmsd)
 
     Reference standard:
-        Atom-to-atom RMSD < 2.0 Å = successful redocking (CASF-2013 benchmark;
-        PMC12661494 kinase benchmarking; Scientific Reports 2024 RMSD validation)
+        Atom-to-atom RMSD < 2.0 Å = successful redocking
+        (CASF-2013 benchmark, PMC12661494, Scientific Reports 2024)
     """
     if not _HAVE_RDKIT:
         logger.error("[autodock] RDKit not available for RMSD calculation")
         return None
 
     from rdkit import Chem
-    from rdkit.Chem import AllChem
+    from rdkit.Chem import AllChem, rdMolAlign, rdFMCS
 
     ref_mol = _read_ligand_from_pdbqt_3d(reference_pdbqt)
     docked_mol = _read_ligand_from_pdbqt_3d(docked_pdbqt)
@@ -1020,25 +1025,58 @@ def compute_rmsd(docked_pdbqt: str,
 
     n_ref = ref_mol.GetNumAtoms()
     n_docked = docked_mol.GetNumAtoms()
-    if n_ref != n_docked:
-        logger.warning(f"[autodock] Atom count mismatch: ref={n_ref} vs docked={n_docked} "
-              "— may be different protonation states. Proceeding anyway.")
-        min_atoms = min(n_ref, n_docked)
-        # Truncate to common number of atoms
-        if n_ref != min_atoms:
-            ref_mol = Chem.PathToSubmol(ref_mol, list(range(min_atoms)))
-        if n_docked != min_atoms:
-            docked_mol = Chem.PathToSubmol(docked_mol, list(range(min_atoms)))
 
-    # Optimal superposition via RMSD alignment
-    # AllChem.AlignMol() returns the RMSD after optimal rotation
-    atom_rmsd = AllChem.AlignMol(docked_mol, ref_mol)
+    # ── Same atom count: direct optimal alignment ─────────────────────────
+    if n_ref == n_docked:
+        atom_rmsd = rdMolAlign.GetBestRMS(docked_mol, ref_mol)
+    else:
+        # Different atom counts: find MCS to identify the shared scaffold.
+        # RMSD is computed ONLY on the MCS-matched atoms.
+        # If MCS yields < 3 matched atom pairs, the molecules are too
+        # different for a meaningful RMSD → return None.
+        mcs_result = rdFMCS.FindMCS(
+            [ref_mol, docked_mol],
+            ringMatchesRingOnly=True,
+            bondCompare=rdFMCS.BondCompare.CompareAny,
+            timeout=10,
+        )
+        if mcs_result.numAtoms < 3:
+            logger.warning(
+                f"[autodock] RMSD: ref={n_ref} atoms vs docked={n_docked} atoms, "
+                f"but MCS found only {mcs_result.numAtoms} common atoms "
+                f"(< 3 minimum) — no meaningful RMSD. Returning None."
+            )
+            return None
+
+        patom = Chem.MolFromSmarts(mcs_result.smartsString)
+        if patom is None:
+            logger.error("[autodock] Could not parse MCS smarts for RMSD")
+            return None
+
+        mr = ref_mol.GetSubstructMatch(patom)   # atom indices in ref_mol
+        md = docked_mol.GetSubstructMatch(patom) # atom indices in docked_mol
+
+        if not mr or not md or len(mr) != len(md):
+            logger.error(
+                f"[autodock] MCS substructure match failed "
+                f"(ref={len(mr)}, docked={len(md)}) — no meaningful RMSD."
+            )
+            return None
+
+        # Build atom map: (docked_idx, ref_idx) pairs for rdMolAlign
+        atom_map = list(zip(md, mr))
+        atom_rmsd = rdMolAlign.GetBestRMS(docked_mol, ref_mol, atomMap=atom_map)
+        logger.warning(
+            f"[autodock] RMSD computed on MCS subset: "
+            f"{len(mr)} matched atoms (ref={n_ref}, docked={n_docked}). "
+            f"atom_rmsd={atom_rmsd:.4f} A"
+        )
 
     if method == 'atom':
         return float(atom_rmsd)
 
-    # Center-of-mass RMSD
-    def com(mol):
+    # ── Center-of-mass RMSD (always uses full molecule) ──────────────
+    def _com(mol):
         conf = mol.GetConformer()
         xs = [conf.GetAtomPosition(i).x for i in range(mol.GetNumAtoms())]
         ys = [conf.GetAtomPosition(i).y for i in range(mol.GetNumAtoms())]
@@ -1046,8 +1084,8 @@ def compute_rmsd(docked_pdbqt: str,
         n = mol.GetNumAtoms()
         return (sum(xs) / n, sum(ys) / n, sum(zs) / n)
 
-    rc = com(ref_mol)
-    dc = com(docked_mol)
+    rc = _com(ref_mol)
+    dc = _com(docked_mol)
     import numpy as np
     com_rmsd = np.sqrt((dc[0] - rc[0])**2 + (dc[1] - rc[1])**2 + (dc[2] - rc[2])**2)
 
@@ -1581,7 +1619,7 @@ def _read_ligand_from_pdbqt(pdbqt_path: str):
                 x = float(line[30:38]); y = float(line[38:46]); z = float(line[46:54])
             except ValueError:
                 continue
-            elem = line[77:79].strip().capitalize() or line[12:14].strip().capitalize()
+            elem = line[78:80].strip().capitalize() or line[12:14].strip().capitalize()
             if elem == 'A': elem = 'C'
             if elem not in ('C', 'N', 'O', 'S', 'P', 'H', 'F', 'Cl', 'Br', 'I'):
                 elem = 'C'
@@ -1605,7 +1643,7 @@ def _read_ligand_from_pdbqt(pdbqt_path: str):
 
 def compute_clash_score(docked_pdbqt: str,
                          receptor_pdb: str,
-                         clash_threshold: float = 1.2) -> dict:
+                         clash_threshold: float = 0.5) -> dict:
     """
     Detect steric clashes between a docked ligand pose and the protein.
 
@@ -3895,6 +3933,7 @@ def dock_ligand(receptor_pdbqt: str,
                 include_interactions: bool = False,
                 include_clash: bool = False,
                 output_dir: str = None,
+                return_structured: bool = False,
                 timeout: int = 600) -> tuple:
     """
     Dock a single ligand into a protein binding site (AutoDock Vina).
@@ -4078,7 +4117,32 @@ def dock_ligand(receptor_pdbqt: str,
         metadata['clash'] = clash_result
 
     if metadata:
+        if return_structured:
+            clash_res = metadata.get('clash')
+            dr = build_docking_result(
+                compound_name=os.path.basename(ligand_pdbqt),
+                receptor=receptor_pdbqt,
+                center=tuple(center) if center else None,
+                box_size=tuple(box_size) if box_size else None,
+                energies=energies, poses=poses,
+                interactions=metadata.get('interactions'),
+                clash_result=clash_res,
+                pre_dock_score=None,
+                best_pose_path=best_pose_path,
+            )
+            return dr
         return energies, poses, metadata
+    if return_structured:
+        dr = build_docking_result(
+            compound_name=os.path.basename(ligand_pdbqt),
+            receptor=receptor_pdbqt,
+            center=tuple(center) if center else None,
+            box_size=tuple(box_size) if box_size else None,
+            energies=energies, poses=poses,
+            pre_dock_score=None,
+            best_pose_path=best_pose_path,
+        )
+        return dr
     return energies, poses
 
 
@@ -4278,6 +4342,172 @@ def _detect_ligand_resn(pdb_path: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P1-5: VIRTUAL SCREENING STATISTICS — Enrichment Metrics
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fetch_bioactivities(
+    target_chembl_id: str,
+    standard_types: tuple = ("IC50", "Ki", "EC50", "Kd"),
+    min_pchembl: float = None,
+    cache_file: str = None,
+    timeout: int = 10,
+) -> dict:
+    """
+    Fetch bioactivity records for a target from ChEMBL.
+
+    Retrieves published IC50/Ki/EC50/Kd data with SMILES for a given
+    ChEMBL target ID. Results are cached to cache_file (JSON) on success.
+    """
+    import json as _json, os as _os, requests as _requests
+    if cache_file and _os.path.exists(cache_file):
+        logger.info(f"[autodock] Loading cached bioactivities from {cache_file}")
+        with open(cache_file) as f:
+            return _json.load(f)
+    base_url = "https://www.ebi.ac.uk/chembl/api/data"
+    headers = {"Accept": "application/json"}
+    try:
+        tgt_resp = _requests.get(f"{base_url}/target/{target_chembl_id}.json",
+                                headers=headers, timeout=timeout)
+        tgt_resp.raise_for_status()
+        target_name = tgt_resp.json().get("pref_name", target_chembl_id)
+    except Exception as e:
+        logger.warning(f"[autodock] Could not fetch target name for {target_chembl_id}: {e}")
+        target_name = target_chembl_id
+    all_activities, offset, page_size = [], 0, 1000
+    while True:
+        params = {"target_chembl_id": target_chembl_id, "limit": page_size, "offset": offset}
+        if standard_types:
+            params["standard_type"] = ",".join(standard_types)
+        try:
+            resp = _requests.get(f"{base_url}/activity.json", params=params,
+                               headers=headers, timeout=timeout)
+            resp.raise_for_status()
+            page = resp.json().get("activities", [])
+        except Exception as e:
+            logger.warning(f"[autodock] ChEMBL API error at offset {offset}: {e}")
+            break
+        if not page:
+            break
+        all_activities.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+    smiles_to_id, smiles_to_pchembl, smiles_to_type = {}, {}, {}
+    for rec in all_activities:
+        smiles = rec.get("canonical_smiles")
+        if not smiles:
+            continue
+        pchembl = rec.get("pchembl_value")
+        stype = rec.get("standard_type", "")
+        if standard_types and stype not in standard_types:
+            continue
+        if min_pchembl is not None:
+            if pchembl is None:
+                continue
+            try:
+                if float(pchembl) < min_pchembl:
+                    continue
+            except (TypeError, ValueError):
+                continue
+        existing = smiles_to_pchembl.get(smiles)
+        if existing is None or (pchembl is not None and float(pchembl) > float(existing)):
+            smiles_to_pchembl[smiles] = pchembl
+            smiles_to_id[smiles] = rec.get("molecule_chembl_id", "")
+            smiles_to_type[smiles] = stype
+    result = {"smiles_to_id": smiles_to_id, "smiles_to_pchembl": smiles_to_pchembl,
+              "smiles_to_type": smiles_to_type, "target_name": target_name,
+              "count": len(smiles_to_pchembl)}
+    if cache_file:
+        try:
+            with open(cache_file, "w") as f:
+                _json.dump(result, f)
+            logger.info(f"[autodock] Cached {result['count']} activities to {cache_file}")
+        except Exception as e:
+            logger.warning(f"[autodock] Could not write cache file: {e}")
+    logger.info(f"[autodock] fetch_bioactivities: {result['count']} unique active compounds for {target_name}")
+    return result
+
+def compute_enrichment(screened_smiles: list, bioactivity_data: dict,
+                       decoy_smiles: list = None, threshold_pchembl: float = 6.0) -> dict:
+    """
+    Compute enrichment statistics (AUC, BEDROC, EF) for virtual screening results.
+    """
+    import numpy as np
+    from scipy import stats as scipy_stats
+    n_total = len(screened_smiles)
+    if n_total == 0:
+        return {"error": "No screened compounds provided"}
+    active_smiles = set(bioactivity_data["smiles_to_pchembl"].keys())
+    smiles_to_id = bioactivity_data["smiles_to_id"]
+    is_active = np.array([s in active_smiles for s in screened_smiles], dtype=bool)
+    n_active = int(is_active.sum())
+    n_decoys = len(decoy_smiles) if decoy_smiles else (n_total - n_active)
+    if n_active == 0:
+        return {"n_screened": n_total, "n_active": 0, "n_decoys": n_decoys,
+                "enrichment_factors": {}, "auc": 0.5, "bedroc": 0.0, "ef_1pct": 0.0,
+                "ef_5pct": 0.0, "ef_10pct": 0.0, "n_hits_top50": 0, "n_hits_top1pct": 0,
+                "active_names": {}, "recall_top10pct": 0.0,
+                "note": "No active compounds found in screened library"}
+    active_names = {s: smiles_to_id.get(s, "") for s in screened_smiles if s in active_smiles}
+    y_true = is_active.astype(int)
+    y_score = np.arange(n_total, 0, -1, dtype=float)
+    auc = float(scipy_stats.roc_auc_score(y_true, y_score))
+    alpha, m = 20.0, n_active
+    r_i = np.where(is_active)[0] + 1
+    def _bedroc(ranks, n, m, alpha):
+        if m == 0 or n == 0:
+            return 0.0
+        s = sum(np.exp(-alpha * ri / n) for ri in ranks)
+        random_sum = (1 - np.exp(-alpha)) / (n * (1 - np.exp(-alpha / n)))
+        return s / (m * random_sum) if random_sum else 0.0
+    bedroc = _bedroc(r_i, n_total, m, alpha)
+    def ef_at_fraction(frac):
+        k = max(1, int(np.ceil(n_total * frac)))
+        hits_topk = int(is_active[:k].sum())
+        return float((hits_topk / m) / frac) if m > 0 else 0.0
+    enrichment_factors = {frac: ef_at_fraction(frac) for frac in [0.005, 0.01, 0.02, 0.05, 0.10]}
+    k_50 = min(50, n_total)
+    top1pct_k = max(1, int(np.ceil(n_total * 0.01)))
+    top10pct_k = max(1, int(np.ceil(n_total * 0.10)))
+    recall_top10pct = float(is_active[:top10pct_k].sum()) / m if m > 0 else 0.0
+    return {"n_screened": n_total, "n_active": n_active, "n_decoys": n_decoys,
+            "enrichment_factors": enrichment_factors, "auc": auc, "bedroc": bedroc,
+            "ef_1pct": enrichment_factors[0.01], "ef_5pct": enrichment_factors[0.05],
+            "ef_10pct": enrichment_factors[0.10],
+            "n_hits_top50": int(is_active[:k_50].sum()),
+            "n_hits_top1pct": int(is_active[:top1pct_k].sum()),
+            "active_names": active_names, "recall_top10pct": recall_top10pct}
+
+def print_enrichment_report(stats: dict, target_name: str = None):
+    """Print a formatted enrichment statistics report."""
+    if "error" in stats:
+        print(f"[autodock] Enrichment error: {stats['error']}")
+        return
+    sep = "=" * 55
+    hdr = "Enrichment Statistics"
+    if target_name:
+        hdr = f"Enrichment Statistics — {target_name}"
+    auc_val = stats["auc"]
+    auc_label = "Excellent" if auc_val > 0.9 else "Good" if auc_val > 0.8 else "Fair" if auc_val > 0.7 else "Poor"
+    print(f"\n{sep}\n  {hdr}\n{sep}")
+    print(f"  Screened compounds : {stats['n_screened']}")
+    print(f"  Confirmed actives  : {stats['n_active']} ({100*stats['n_active']/max(stats['n_screened'],1):.1f}%)")
+    print(f"  Decoys / inactives : {stats['n_decoys']}")
+    print(f"\n  -- Global Ranking ----------------------------------------")
+    print(f"  AUC               : {stats['auc']:.4f}  ({auc_label})")
+    print(f"  BEDROC (alpha=20)  : {stats['bedroc']:.4f}")
+    print(f"\n  -- Enrichment Factors ------------------------------------")
+    for frac, ef in stats["enrichment_factors"].items():
+        label = f"EF@{int(frac*100)}%"
+        bar = "#" * min(int(ef), 20) if ef > 0 else ""
+        print(f"  {label:<10} : {ef:6.2f}x  {bar}")
+    print(f"\n  -- Early Enrichment --------------------------------------")
+    print(f"  Top 50 hits        : {stats['n_hits_top50']} active compounds")
+    print(f"  Top 1% hits        : {stats['n_hits_top1pct']} active compounds")
+    print(f"  Recall @ top 10%   : {100*stats['recall_top10pct']:.1f}% of all actives found")
+    print(f"{sep}\n")
 # SELF-TEST
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
