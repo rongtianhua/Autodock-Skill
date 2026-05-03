@@ -26,7 +26,8 @@ import os
 import tempfile
 import warnings
 import logging
-from typing import Optional
+from typing import Optional, Callable
+import signal
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 
@@ -49,6 +50,34 @@ def _log_debug(msg): autodock_logger.debug(msg)
 
 # ─── DockingResult: structured publication-ready result ─────────────────────────
 
+_RECEPTOR_SOURCE_LABELS = {
+    'PDB':          'X-ray crystal structure (RCSB PDB)',
+    'PDB-REDO':     'PDB-REDO optimized crystal structure',
+    'AlphaFold':    'AlphaFold2 predicted structure (UniProt)',
+    'SWISS-MODEL':  'SWISS-MODEL homology model',
+}
+
+def _detect_receptor_source(pdb_path: str) -> str | None:
+    """
+    Auto-detect receptor source from PDB file header.
+    
+    Returns one of: 'PDB', 'PDB-REDO', 'AlphaFold', 'SWISS-MODEL', or None if unknown.
+    """
+    if not os.path.exists(pdb_path):
+        return None
+    with open(pdb_path) as f:
+        text = f.read(5000)  # read first 5KB for header
+    
+    if 'REMARK 1  DESIGNATED MODEL' in text or 'TITLE  ALPHAFOLD' in text.upper():
+        return 'AlphaFold'
+    if 'EXPDTA  THEORETICAL MODEL' in text:
+        return 'SWISS-MODEL'
+    if 'PDB-REDO' in text:
+        return 'PDB-REDO'
+    if 'EXPDTA  X-RAY' in text or 'EXPDTA  SYNCHROTRON' in text:
+        return 'PDB'
+    return None
+
 @dataclass(slots=True)
 class DockingResult:
     """
@@ -60,6 +89,7 @@ class DockingResult:
     compound_name: str
     receptor: str                   # receptor PDBQT path or name
     method: str = "AutoDock Vina 1.2.5"
+    receptor_source: str = None   # 'PDB' | 'AlphaFold' | 'SWISS-MODEL' | 'PDB-REDO' | None
 
     # ── Docking parameters (for method reproducibility) ──────────────────
     center: tuple = field(default_factory=tuple)
@@ -123,6 +153,14 @@ class DockingResult:
             self._aggregate_interactions()
         return self._n_hydrophobic
 
+    @property
+    def method_label(self) -> str:
+        """Full method description for publications."""
+        parts = [self.method]
+        if self.receptor_source:
+            parts.append(f"({_RECEPTOR_SOURCE_LABELS.get(self.receptor_source, self.receptor_source)})")
+        return ' '.join(parts)
+
     def _aggregate_interactions(self):
         self._n_hbonds = sum(1 for i in self.interactions if i.get('type') == 'H-bond')
         self._n_pi_stacking = sum(1 for i in self.interactions if i.get('type') == 'π-π')
@@ -146,6 +184,10 @@ class DockingResult:
         d.pop('_n_pi_stacking', None)
         d.pop('_n_hydrophobic', None)
         d.pop('_interactions_computed', None)
+        # Add human-readable receptor source
+        if d.get('receptor_source'):
+            d['receptor_source_label'] = _RECEPTOR_SOURCE_LABELS.get(
+                d['receptor_source'], d['receptor_source'])
         return d
 
     def to_dataframe_row(self) -> dict:
@@ -154,6 +196,8 @@ class DockingResult:
         return {
             'compound': self.compound_name,
             'receptor': os.path.basename(self.receptor),
+            'receptor_source': self.receptor_source or None,
+            'receptor_source_label': _RECEPTOR_SOURCE_LABELS.get(self.receptor_source, self.receptor_source) if self.receptor_source else None,
             'best_affinity_kcal_mol': self.best_affinity,
             'pre_dock_score': self.pre_dock_score,
             'score_improvement': self.score_improvement,
@@ -192,6 +236,7 @@ def build_docking_result(
     clash_result: dict = None,
     pre_dock_score: float = None,
     binding_pocket: dict = None,
+    receptor_source: str = None,
     best_pose_path: str = None,
     rmsd_from_crystal: float = None,
     protocol_valid: bool = None,
@@ -227,6 +272,7 @@ def build_docking_result(
         clash_score=clash_result.get('clash_score') if clash_result else None,
         clash_acceptable=clash_result.get('is_acceptable') if clash_result else None,
         binding_pocket=binding_pocket,
+        receptor_source=receptor_source,
         best_pose_pdbqt=best_pose_path,
         all_poses_pdbqt=poses if poses else [],
     )
@@ -2596,7 +2642,7 @@ def _get_mol_2d_bounds(conf, n_atoms):
     return min(xs), max(xs), min(ys), max(ys)
 
 
-def _inject_svg_legend(svg_text, seen_types, dummy_info, conf, drawer):
+def _inject_svg_legend(svg_text, seen_types, dummy_info, conf, drawer, canvas_w, canvas_h):
     """
     Inject legend and residue label text elements into SVG.
     drawer is the Cairo MolDraw2DCairo with the same coordinate scale as the SVG.
@@ -2628,7 +2674,7 @@ def _inject_svg_legend(svg_text, seen_types, dummy_info, conf, drawer):
         # Title
         extra_elements.append(
             f'<text x="{box_x + 8}" y="{box_y + 4}" '
-            f'font-family="Helvetica" font-size="13" font-weight="bold" '
+            f'font-family="Helvetica,sans-serif" font-size="13" font-weight="bold" '
             f'fill="#1E1E1E">Interactions</text>'
         )
 
@@ -2645,11 +2691,11 @@ def _inject_svg_legend(svg_text, seen_types, dummy_info, conf, drawer):
             )
             extra_elements.append(
                 f'<text x="{box_x + 24}" y="{cy + 12}" '
-                f'font-family="Helvetica" font-size="13" fill="#282828">{label}</text>'
+                f'font-family="Helvetica,sans-serif" font-size="13" fill="#282828">{label}</text>'
             )
 
     # ── Residue labels near dummy atoms ──────────────────────────────────
-    for didx, itype, res_label, lig_idx, _arrow in dummy_info:
+    for didx, itype, res_label, lig_idx, _arrow, _prot_c in dummy_info:
         if not res_label:
             continue
         pos = conf.GetAtomPosition(didx)
@@ -2660,7 +2706,7 @@ def _inject_svg_legend(svg_text, seen_types, dummy_info, conf, drawer):
         if 0 <= lx < 1200 - 60 and 0 <= ly < svg_h_val - 16:
             extra_elements.append(
                 f'<text x="{lx}" y="{ly}" '
-                f'font-family="Helvetica" font-size="13" fill="#141414">'
+                f'font-family="Helvetica,sans-serif" font-size="13" fill="#141414">'
                 f'{res_label}</text>'
             )
 
@@ -2695,7 +2741,7 @@ def _render_svg_vector(rwmol, dummy_info, dummy_colors, conf, drawer, canvas_w, 
                             highlightAtomColors=dummy_colors)
 
     # Draw interaction lines/arrows on top
-    for didx, itype, res_label, lig_idx, arrow_rev in dummy_info:
+    for didx, itype, res_label, lig_idx, arrow_rev, prot_c in dummy_info:
         style = INTERACTION_STYLE.get(itype, INTERACTION_STYLE.get('Hydrophobic', {}))
         color = style.get('color', (0.5, 0.5, 0.5))
         end_style = style.get('end_style', 'dash')
@@ -2703,33 +2749,42 @@ def _render_svg_vector(rwmol, dummy_info, dummy_colors, conf, drawer, canvas_w, 
         dum_pos = conf.GetAtomPosition(didx)
         lig_px = svg_drawer.GetDrawCoords(Point2D(lig_pos.x, lig_pos.y))
         dum_px = svg_drawer.GetDrawCoords(Point2D(dum_pos.x, dum_pos.y))
-        dx = dum_px.x - lig_px.x
-        dy = dum_px.y - lig_px.y
+        # For salt-bridge / metal complex: project protein 3D center to 2D
+        # and draw from protein_px to lig_px (not from dummy to lig_px)
+        if prot_c is not None:
+            prot_px = svg_drawer.GetDrawCoords(Point2D(prot_c[0], prot_c[1]))
+            draw_from = prot_px
+            draw_to = lig_px
+        else:
+            draw_from = dum_px
+            draw_to = lig_px
+        dx = draw_to.x - draw_from.x
+        dy = draw_to.y - draw_from.y
         if (dx*dx + dy*dy) < 1:
             continue
         svg_drawer.SetColour(color)
         if end_style == 'arrow':
             if arrow_rev:
-                svg_drawer.DrawArrow(Point2D(dum_px.x, dum_px.y),
-                                     Point2D(lig_px.x, lig_px.y),
+                svg_drawer.DrawArrow(Point2D(draw_from.x, draw_from.y),
+                                     Point2D(draw_to.x, draw_to.y),
                                      False, 0.065, 0.45)
             else:
-                svg_drawer.DrawArrow(Point2D(lig_px.x, lig_px.y),
-                                     Point2D(dum_px.x, dum_px.y),
+                svg_drawer.DrawArrow(Point2D(draw_to.x, draw_to.y),
+                                     Point2D(draw_from.x, draw_from.y),
                                      False, 0.065, 0.45)
         elif end_style == 'double':
-            svg_drawer.DrawLine(Point2D(lig_px.x, lig_px.y),
-                                Point2D(dum_px.x, dum_px.y))
+            svg_drawer.DrawLine(Point2D(draw_to.x, draw_to.y),
+                                Point2D(draw_from.x, draw_from.y))
             length = (dx*dx + dy*dy) ** 0.5
             if length > 0:
                 nx = -dy / length * 3.0
                 ny = dx / length * 3.0
                 svg_drawer.DrawLine(
-                    Point2D(lig_px.x + nx, lig_px.y + ny),
-                    Point2D(dum_px.x + nx, dum_px.y + ny))
+                    Point2D(draw_to.x + nx, draw_to.y + ny),
+                    Point2D(draw_from.x + nx, draw_from.y + ny))
         elif end_style == 'dash':
             svg_drawer.DrawLine(Point2D(lig_px.x, lig_px.y),
-                                Point2D(dum_px.x, dum_px.y))
+                                Point2D(draw_from.x, draw_from.y))
 
     svg_drawer.FinishDrawing()
     return svg_drawer.GetDrawingText()
@@ -3096,7 +3151,7 @@ def render_interactions_2d(receptor_pdb: str,
             svg_text = _render_svg_vector(rwmol, dummy_info, dummy_colors,
                                           conf, drawer, canvas_w, canvas_h)
             # Inject legend + residue labels as SVG text elements
-            svg_text = _inject_svg_legend(svg_text, seen_types, dummy_info, conf, drawer)
+            svg_text = _inject_svg_legend(svg_text, seen_types, dummy_info, conf, drawer, canvas_w, canvas_h)
             # Use cairosvg (installed in autodock313) for SVG→PDF conversion
             # This avoids ImageMagick font issues with Helvetica on macOS
             try:
@@ -3839,7 +3894,8 @@ def dock_ligand(receptor_pdbqt: str,
                 receptor_pdb: str = None,
                 include_interactions: bool = False,
                 include_clash: bool = False,
-                output_dir: str = None) -> tuple:
+                output_dir: str = None,
+                timeout: int = 600) -> tuple:
     """
     Dock a single ligand into a protein binding site (AutoDock Vina).
 
@@ -3861,6 +3917,8 @@ def dock_ligand(receptor_pdbqt: str,
                     - docking_all_poses.pdbqt ← all n_poses
                     These files can be passed directly to detect_interactions() and
                     render_scene() without manual path handling.
+        timeout: Maximum seconds to wait for docking to complete (default 600s).
+                 If docking takes longer, raises TimeoutError.
 
     Returns:
         (energies: ndarray, poses: list of PDBQT strings)
@@ -3894,8 +3952,34 @@ def dock_ligand(receptor_pdbqt: str,
     v.set_receptor(receptor_pdbqt)
     v.set_ligand_from_file(ligand_pdbqt)
     v.compute_vina_maps(center=center, box_size=box_size)
-    v.dock(exhaustiveness=exhaustiveness, n_poses=n_poses,
-           min_rmsd=1.0)
+    # ── Docking with optional timeout ──────────────────────────────────────────
+    def _dock_with_timeout(vina_obj, ex, nposes, rmsd, timeout_sec):
+        """
+        Run vina.do_dock in a background thread; raise TimeoutError if it
+        does not return within timeout_sec seconds.
+        """
+        result = {}
+        def worker():
+            try:
+                vina_obj.dock(exhaustiveness=ex, n_poses=nposes, min_rmsd=rmsd)
+                result['done'] = True
+            except Exception as e:
+                result['error'] = str(e)
+                result['done'] = True
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        t.join(timeout=timeout_sec)
+        if t.is_alive():
+            # Timed out — Vina is stuck
+            raise TimeoutError(
+                f"Docking timed out after {timeout_sec}s. "
+                f"Try a smaller search space or increase timeout."
+            )
+        if 'error' in result:
+            raise RuntimeError(f"Docking failed: {result['error']}")
+
+    _dock_with_timeout(v, exhaustiveness, n_poses, 1.0, timeout)
 
     energies = v.energies(n_poses=n_poses, energy_range=3.0)
 
