@@ -493,22 +493,23 @@ def fetch_molecule_drugbank(drugbank_id: str = None,
     """
     Fetch small molecule from DrugBank.
 
+    Note: DrugBank 已停止公开API（需注册+付费Key）。
+    本函数通过 PubChem 代理提供 DrugBank 名称搜索。
+    若需完整 DrugBank 数据，请使用 PubChem 或 ChEMBL。
+
     Args:
-        drugbank_id: DrugBank ID (e.g. 'DB00102')
-        drug_name: Or search by name
+        drugbank_id: DrugBank ID (e.g. 'DB00102') — 需要 API Key，暂不支持
+        drug_name: 按药物名称搜索（通过 PubChem 代理）
 
     Returns:
-        dict with keys: drugbank_id, name, smiles, description
+        dict with keys: drugbank_id, name, smiles, source
     """
-    import json
-
     if drugbank_id:
-        url = f"https://go.drugbank.com/api/regna/similar_by_name/{drugbank_id}"  # just search
-        # Actually use the public DrugBank structure API
-        url = f"https://www.drugbank.ca/structures/bulk_xml/{drugbank_id}"
-        raise NotImplementedError("DrugBank bulk download requires API key — use PubChem instead")
+        raise NotImplementedError(
+            "DrugBank ID lookup requires API key which is no longer publicly available. "
+            "Use fetch_molecule_pubchem(name) or fetch_molecule_chembl(name) instead."
+        )
     elif drug_name:
-        # Use PubChem as DrugBank proxy
         result = fetch_molecule_pubchem(drug_name, identifier_type='name')
         result['source'] = 'PubChem (DrugBank name search)'
         return result
