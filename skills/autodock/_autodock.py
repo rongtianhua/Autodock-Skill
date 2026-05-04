@@ -4415,28 +4415,28 @@ def _detect_ligand_resn(pdb_path: str) -> str:
 
 def predict_admet(smiles_list: list[str],
                 use_remote: bool = True,
-                timeout: int = 60) -> pd.DataFrame | None:
+                timeout: int = 120) -> pd.DataFrame | None:
     """
     Predict ADMET properties for a list of compounds.
 
     Tries three paths in order:
-      1. ADMETlab 3.0 REST API (/apis/evaluate/) — fast but often returns 500
-      2. ADMETlab 3.0 web form via Playwright browser automation — reliable,
-         returns 100+ columns including CYP inhibition, toxicity, etc.
-      3. Local RDKit — always works, returns a curated subset of properties
+      1. ADMET-AI (Neurosnap) — fast REST API, 99 columns, ~1-5s
+      2. ADMETlab 3.0 web via Playwright — 122 columns, ~20-30s
+      3. Local RDKit — always works, curated subset, instant
 
     Args:
         smiles_list: List of SMILES strings
         use_remote: If False, skip remote calls and use RDKit only
-        timeout: Seconds to wait for Playwright browser result (default 60)
+        timeout: Total timeout in seconds (default 120)
 
     Returns:
         DataFrame with ADMET columns. Schema varies by source:
-          - ADMETlab web (Playwright): raw_smiles, smiles, MW, LogP, TPSA, HBD,
-            HBA, nRot, QED, CYP1A2-inh, CYP2C9-inh, CYP2D6-inh, CYP3A4-inh,
-            hERG, DILI, Ames, BBB, Caco2, MDCK, PAMPA, Pgp-inh, HIA, F20%,
-            F30%, F50%, and 80+ more columns
-          - RDKit fallback: SMILES, MW, LogP, TPSA, HBD, HBA, RotatableBonds,
+          - ADMET-AI: 99 columns (molecular_weight, logP, hbond_acceptors,
+            hbond_donors, Lipinski, QED, CYP1A2_Veith, CYP2C19_Veith,
+            CYP2D6_Veith, CYP3A4_Veith, hERG, BBB_Martins, HIA_Hou,
+            AMES, DILI, ClinTox, Carcinogens, PAMPA_NCATS, ...)
+          - ADMETlab web (Playwright): 122 columns, same endpoints
+          - RDKit: SMILES, MW, LogP, TPSA, HBD, HBA, RotatableBonds,
             QED, LipinskiViolations, VeberCompliant, PAINSAlert,
             BBB_penetration, hERG_risk, CYP3A4_inhibitor, source
         Returns None if all methods fail.
@@ -4448,25 +4448,21 @@ def predict_admet(smiles_list: list[str],
     if not smiles_list:
         return None
 
-    # ── Path 1: REST API (fast fail, rarely works) ──────────────────
+    # ── Path 1: ADMET-AI (Neurosnap) — fast REST API ────────────────
     if use_remote:
         try:
-            import requests as _req
-            url = "https://admetlab3.scbdd.com/apis/evaluate/"
-            payload = {"smiles": smiles_list}
-            resp = _req.post(url, json=payload, timeout=timeout)
-            if resp.status_code == 200:
-                logger.info(f"[autodock] ADMETlab REST: {len(smiles_list)} compounds")
-                return pd.DataFrame(resp.json())
-            else:
-                logger.warning(f"[autodock] ADMETlab REST HTTP {resp.status_code}")
+            df = _predict_admet_neurosnap(smiles_list, timeout=min(timeout, 60))
+            if df is not None and len(df) > 0:
+                logger.info(f"[autodock] ADMET-AI (Neurosnap): {len(df)} compounds, "
+                            f"{len(df.columns)} columns")
+                return df
         except Exception as e:
-            logger.warning(f"[autodock] ADMETlab REST unavailable ({e}), trying browser")
+            logger.warning(f"[autodock] ADMET-AI failed ({e}), trying Playwright")
 
-    # ── Path 2: Playwright browser → ADMETlab web form → CSV ───────
+    # ── Path 2: ADMETlab via Playwright browser → CSV ───────────────
     if use_remote:
         try:
-            csv_path = _run_admetlab_browser(smiles_list, timeout=timeout)
+            csv_path = _run_admetlab_browser(smiles_list, timeout=min(timeout, 60))
             if csv_path:
                 df = _parse_admetlab_csv(csv_path)
                 if df is not None and len(df) > 0:
@@ -4478,6 +4474,118 @@ def predict_admet(smiles_list: list[str],
 
     # ── Path 3: Local RDKit ─────────────────────────────────────────
     return _predict_admet_rdkit(smiles_list)
+
+
+def _predict_admet_neurosnap(smiles_list: list[str], timeout: int = 60) -> pd.DataFrame | None:
+    """
+    Predict ADMET via ADMET-AI on Neurosnap (https://neurosnap.ai).
+
+    Workflow:
+      1. Submit job via POST /api/job/submit/ADMET-AI (multipart, JSON molecules)
+      2. Poll /api/job/status/<job_id> until 'completed'
+      3. Download /api/job/file/<job_id>/out/results.csv
+
+    API key is read from the ADMETLAB_API_KEY environment variable,
+    or ~/.openclaw/keys/neurosnap_api_key.
+
+    Returns DataFrame with 99 columns (molecular_weight, logP, CYP, hERG, etc.)
+    or None if the call fails.
+    """
+    import json, time, os, urllib.request, urllib.error
+
+    # Resolve API key
+    api_key = os.environ.get('ADMETLAB_API_KEY') or _load_neurosnap_key()
+    if not api_key:
+        logger.debug("[autodock] No Neurosnap API key found")
+        return None
+
+    endpoint = 'https://neurosnap.ai'
+
+    # Build multipart body — "Input Molecules" field with JSON array of SMILES
+    boundary = '----WebKitFormBoundary7MA4YWxkTrZu0gW'
+    molecules = [{'data': smi.strip(), 'type': 'smiles'} for smi in smiles_list if smi.strip()]
+    body = (f'--{boundary}\r\n'
+            f'Content-Disposition: form-data; name="Input Molecules"\r\n\r\n'
+            f'{json.dumps(molecules)}\r\n'
+            f'--{boundary}--\r\n').encode()
+
+    # Submit job
+    try:
+        req = urllib.request.Request(
+            f'{endpoint}/api/job/submit/ADMET-AI',
+            data=body,
+            headers={
+                'X-API-KEY': api_key,
+                'Content-Type': f'multipart/form-data; boundary={boundary}',
+                'User-Agent': 'curl/7.70+',
+            }
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            job_id = json.loads(resp.read())
+    except Exception as e:
+        logger.warning(f"[autodock] Neurosnap job submit failed: {e}")
+        return None
+
+    # Poll until done
+    status_url = f'{endpoint}/api/job/status/{job_id}'
+    poll_req = urllib.request.Request(status_url, headers={'X-API-KEY': api_key, 'User-Agent': 'curl/7.70+'})
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            with urllib.request.urlopen(poll_req, timeout=10) as r:
+                status = json.loads(r.read())
+            if status == 'completed':
+                break
+            elif status in ('failed', 'deleted', 'cancelled'):
+                logger.warning(f"[autodock] Neurosnap job {status}: {job_id}")
+                return None
+        except Exception as e:
+            logger.warning(f"[autodock] Neurosnap status poll error: {e}")
+            return None
+        time.sleep(2)
+    else:
+        logger.warning(f"[autodock] Neurosnap job timed out after {timeout}s")
+        return None
+
+    # Download results CSV
+    csv_url = f'{endpoint}/api/job/file/{job_id}/out/results.csv'
+    try:
+        csv_req = urllib.request.Request(csv_url, headers={'X-API-KEY': api_key, 'User-Agent': 'curl/7.70+'})
+        with urllib.request.urlopen(csv_req, timeout=30) as r:
+            csv_data = r.read().decode('utf-8', errors='replace')
+    except Exception as e:
+        logger.warning(f"[autodock] Neurosnap CSV download failed: {e}")
+        return None
+
+    # Parse CSV
+    import io as _io
+    try:
+        df = pd.read_csv(_io.StringIO(csv_data))
+    except Exception as e:
+        logger.warning(f"[autodock] Failed to parse Neurosnap CSV: {e}")
+        return None
+
+    if df.empty:
+        return None
+
+    # Normalise: lowercase column names, add source tag
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    # 'molecule' column holds SMILES
+    if 'molecule' in df.columns:
+        df = df.rename(columns={'molecule': 'smiles'})
+    df['source'] = 'admet_ai'
+
+    return df
+
+
+def _load_neurosnap_key() -> str | None:
+    """Load Neurosnap API key from ~/.openclaw/keys/neurosnap_api_key."""
+    key_file = os.path.expanduser('~/.openclaw/keys/neurosnap_api_key')
+    try:
+        with open(key_file) as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return None
 
 
 def _run_admetlab_browser(smiles_list: list[str], timeout: int = 60) -> str | None:
