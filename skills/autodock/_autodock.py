@@ -4415,34 +4415,40 @@ def _detect_ligand_resn(pdb_path: str) -> str:
 
 def predict_admet(smiles_list: list[str],
                 use_remote: bool = True,
-                timeout: int = 30) -> pd.DataFrame | None:
+                timeout: int = 60) -> pd.DataFrame | None:
     """
     Predict ADMET properties for a list of compounds.
 
-    Tries ADMETlab 3.0 REST API first; falls back to local RDKit calculation
-    if the service is unavailable. Both paths return the same DataFrame schema.
+    Tries three paths in order:
+      1. ADMETlab 3.0 REST API (/apis/evaluate/) — fast but often returns 500
+      2. ADMETlab 3.0 web form via Playwright browser automation — reliable,
+         returns 100+ columns including CYP inhibition, toxicity, etc.
+      3. Local RDKit — always works, returns a curated subset of properties
 
     Args:
         smiles_list: List of SMILES strings
-        use_remote: If True, try ADMETlab 3.0 API first; if False, use RDKit only
-        timeout: Request timeout in seconds (default 30)
+        use_remote: If False, skip remote calls and use RDKit only
+        timeout: Seconds to wait for Playwright browser result (default 60)
 
     Returns:
-        DataFrame with columns: SMILES, MW, LogP, TPSA, HBD, HBA, RotatableBonds,
-        QED, LipinskiViolations, VeberCompliant, PAINSAlert, BBBPenetration,
-        hERG_risk, CYP3A4_inhibitor, source ('admetlab' or 'local_rdkit')
+        DataFrame with ADMET columns. Schema varies by source:
+          - ADMETlab web (Playwright): raw_smiles, smiles, MW, LogP, TPSA, HBD,
+            HBA, nRot, QED, CYP1A2-inh, CYP2C9-inh, CYP2D6-inh, CYP3A4-inh,
+            hERG, DILI, Ames, BBB, Caco2, MDCK, PAMPA, Pgp-inh, HIA, F20%,
+            F30%, F50%, and 80+ more columns
+          - RDKit fallback: SMILES, MW, LogP, TPSA, HBD, HBA, RotatableBonds,
+            QED, LipinskiViolations, VeberCompliant, PAINSAlert,
+            BBB_penetration, hERG_risk, CYP3A4_inhibitor, source
         Returns None if all methods fail.
     """
     if not _HAVE_RDKIT:
         logger.error("[autodock] RDKit not available for ADMET prediction")
         return None
 
-    from rdkit import Chem
-    from rdkit.Chem import Descriptors, Lipinski
-    from rdkit.Chem.QED import qed
-    from rdkit.Chem.FilterCatalog import FilterCatalog, FilterCatalogParams
+    if not smiles_list:
+        return None
 
-    # ── Try ADMETlab 3.0 API ───────────────────────────────────────────
+    # ── Path 1: REST API (fast fail, rarely works) ──────────────────
     if use_remote:
         try:
             import requests as _req
@@ -4450,17 +4456,113 @@ def predict_admet(smiles_list: list[str],
             payload = {"smiles": smiles_list}
             resp = _req.post(url, json=payload, timeout=timeout)
             if resp.status_code == 200:
-                logger.info(f"[autodock] ADMETlab 3.0: {len(smiles_list)} compounds, "
-                            f"{len(resp.json().get('smiles', []))} predicted")
+                logger.info(f"[autodock] ADMETlab REST: {len(smiles_list)} compounds")
                 return pd.DataFrame(resp.json())
             else:
-                logger.warning(f"[autodock] ADMETlab returned {resp.status_code}, "
-                               f"falling back to local RDKit")
+                logger.warning(f"[autodock] ADMETlab REST HTTP {resp.status_code}")
         except Exception as e:
-            logger.warning(f"[autodock] ADMETlab API unavailable ({e}), "
-                           f"using local RDKit calculation")
+            logger.warning(f"[autodock] ADMETlab REST unavailable ({e}), trying browser")
 
-    # ── Local RDKit calculation ────────────────────────────────────────
+    # ── Path 2: Playwright browser → ADMETlab web form → CSV ───────
+    if use_remote:
+        try:
+            csv_path = _run_admetlab_browser(smiles_list, timeout=timeout)
+            if csv_path:
+                df = _parse_admetlab_csv(csv_path)
+                if df is not None and len(df) > 0:
+                    logger.info(f"[autodock] ADMETlab browser: {len(df)} compounds, "
+                                f"{len(df.columns)} columns")
+                    return df
+        except Exception as e:
+            logger.warning(f"[autodock] ADMETlab browser failed ({e}), using RDKit")
+
+    # ── Path 3: Local RDKit ─────────────────────────────────────────
+    return _predict_admet_rdkit(smiles_list)
+
+
+def _run_admetlab_browser(smiles_list: list[str], timeout: int = 60) -> str | None:
+    """
+    Run ADMETlab 3.0 via Playwright browser automation.
+    Submits the SMILES list through the web form, waits for the result page,
+    parses the CSV URL from the HTML, and returns the CSV file path.
+
+    Returns path to the downloaded CSV file ( caller must delete it ), or None.
+    """
+    import subprocess, tempfile, os
+
+    node_script = os.path.join(os.path.dirname(__file__), 'tools', 'admetlab_web.js')
+    if not os.path.exists(node_script):
+        logger.warning(f"[autodock] admetlab_web.js not found at {node_script}")
+        return None
+
+    # Write SMILES to a temp file (one per line)
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.smi', delete=False) as f:
+        f.write('\n'.join(smiles_list))
+        smiles_file = f.name
+
+    tmp_csv = tempfile.mktemp(suffix='.csv')
+
+    try:
+        result = subprocess.run(
+            ['node', node_script, '--csv', tmp_csv, '--smiles-file', smiles_file],
+            capture_output=True,
+            text=True,
+            timeout=timeout + 10,
+            cwd=os.path.dirname(node_script)
+        )
+        if result.returncode != 0:
+            logger.warning(f"[autodock] admetlab_web.js failed: {result.stderr[:200]}")
+            return None
+
+        if os.path.exists(tmp_csv) and os.path.getsize(tmp_csv) > 100:
+            return tmp_csv
+        else:
+            logger.warning(f"[autodock] admetlab_web.js returned empty or no file")
+            return None
+    except subprocess.TimeoutExpired:
+        logger.warning(f"[autodock] admetlab_web.js timed out after {timeout}s")
+        return None
+    finally:
+        try: os.unlink(smiles_file)
+        except: pass
+
+
+def _parse_admetlab_csv(csv_path: str) -> pd.DataFrame | None:
+    """Parse ADMETlab CSV into a normalised DataFrame."""
+    try:
+        # ADMETlab CSV may use comma or tab as separator; try comma first
+        try:
+            df = pd.read_csv(csv_path, sep=',')
+        except Exception:
+            df = pd.read_csv(csv_path, sep='\t')
+        os.unlink(csv_path)
+    except Exception:
+        return None
+
+    if df.empty:
+        return None
+
+    # Strip whitespace from column names
+    df.columns = [str(c).strip() for c in df.columns]
+
+    # Normalise: if there's a 'smiles' col and also 'raw_smiles', keep only 'smiles'
+    if 'raw_smiles' in df.columns and 'smiles' in df.columns:
+        df = df.drop(columns=['raw_smiles'])
+
+    # Lower-case the source column
+    if 'source' in df.columns:
+        df['source'] = df['source'].astype(str).str.lower().str.strip()
+
+    return df
+
+
+def _predict_admet_rdkit(smiles_list: list[str]) -> pd.DataFrame:
+    """Local RDKit ADMET calculation — always available fallback."""
+    from rdkit import Chem
+    from rdkit.Chem import Descriptors, Lipinski
+    from rdkit.Chem.QED import qed
+    from rdkit.Chem.FilterCatalog import FilterCatalog, FilterCatalogParams
+
     results = []
     for smi in smiles_list:
         mol = Chem.MolFromSmiles(smi)
@@ -4469,24 +4571,20 @@ def predict_admet(smiles_list: list[str],
                             'MW': None, 'LogP': None, 'TPSA': None})
             continue
 
-        # Structural alerts
         params = FilterCatalogParams()
         params.AddCatalog(FilterCatalogParams.FilterCatalogs.PAINS)
         catalog = FilterCatalog(params)
         entry = catalog.GetFirstMatch(mol)
 
-        mw = Descriptors.MolWt(mol)
+        mw   = Descriptors.MolWt(mol)
         logp = Descriptors.MolLogP(mol)
-        hbd = Lipinski.NumHDonors(mol)
-        hba = Lipinski.NumHAcceptors(mol)
+        hbd  = Lipinski.NumHDonors(mol)
+        hba  = Lipinski.NumHAcceptors(mol)
         tpsa = Descriptors.TPSA(mol)
-        rot = Lipinski.NumRotatableBonds(mol)
+        rot  = Lipinski.NumRotatableBonds(mol)
         violations = sum([mw > 500, logp > 5, hbd > 5, hba > 10])
         veber = rot <= 10 and tpsa <= 140
-
-        # hERG risk proxy: basic charge/alogp heuristic
-        # (Real hERG prediction needs ML model; this is a conservative proxy)
-        herg_risk = (logp > 4 and tpsa < 75)  # high LogP + low TPSA → possible hERG liability
+        herg_risk = (logp > 4 and tpsa < 75)  # conservative proxy
 
         results.append({
             'SMILES': smi,
@@ -4500,14 +4598,14 @@ def predict_admet(smiles_list: list[str],
             'LipinskiViolations': violations,
             'VeberCompliant': veber,
             'PAINSAlert': entry.GetDescription() if entry else None,
-            'BBB penetration': 'High' if (logp > 0 and tpsa < 90) else 'Low',
+            'BBB_penetration': 'High' if (logp > 0 and tpsa < 90) else 'Low',
             'hERG_risk': herg_risk,
-            'CYP3A4_inhibitor': None,  # needs ML model
+            'CYP3A4_inhibitor': None,
             'source': 'local_rdkit',
         })
 
     df = pd.DataFrame(results)
-    logger.info(f"[autodock] Local ADMET: {len(df)} compounds calculated")
+    logger.info(f"[autodock] Local RDKit ADMET: {len(df)} compounds calculated")
     return df
 
 
