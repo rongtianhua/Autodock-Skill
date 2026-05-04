@@ -94,12 +94,16 @@ from autodock import (
     detect_interactions, detect_interactions_plip,
     render_scene, render_complex, render_pocket,
     render_interactions_pymol, render_interactions_2d,
-    composite_summary,
+    composite_summary, sample_zinc_compounds,
 )
 
 # 1. 获取结构
 fetch_protein_pdb("6LU7")
 mol = fetch_molecule_pubchem("nirmatrelvir")
+
+# 或从 ZINC22 采样药物相似化合物（~130M 可购买化合物）
+df = sample_zinc_compounds(n=50, h_donors_range=(0, 3), logp_range=(2, 4), mw_range=(250, 400))
+print(df[['zinc_id', 'smiles']].head())
 
 # 2. 制备
 prepare_receptor("protein.pdb", "protein.pdbqt")
@@ -480,13 +484,59 @@ fetch_protein_alphafold("Q9H825")  # 无 PDB ID，用 AlphaFold
 
 ## 二、获取小分子结构
 
+**途径 1：PubChem（已知化合物）**
+
 ```python
 from autodock import fetch_molecule_pubchem
 
-mol = fetch_molecule_pubchem("nirmatrelvir")
-mol = fetch_molecule_pubchem("CC(=O)Oc1ccccc1C(=O)O", identifier_type='smiles')
+mol = fetch_molecule_pubchem("nirmatrelvir")  # 按名称
+mol = fetch_molecule_pubchem("CC(=O)Oc1ccccc1C(=O)O", identifier_type='smiles')  # 按 SMILES
 print(mol['smiles'])
 ```
+
+**途径 2：ZINC22 虚拟筛选库（130M+ 可购买化合物）**
+
+```python
+from autodock import sample_zinc_compounds
+
+# 按性质采样药物相似化合物（LogP、H-donor、MW 范围过滤）
+df = sample_zinc_compounds(
+    n=100,
+    h_donors_range=(0, 3),
+    logp_range=(2, 4),
+    mw_range=(250, 400),
+    generation="g",   # zinc-22g = ZINC20 in stock (~130M 可购买)
+    n_workers=4,
+)
+print(df[['zinc_id', 'smiles', 'h_donors', 'logp', 'mw']].head())
+#        zinc_id    smiles  h_donors  logp   mw
+# 0  ZINC490000002oMg     CC(C)N         4   3.0    0
+# 1  ZINC480000001wUw     CCNC          4   2.0    0
+# 2  ZINC470000002phP     C=CCO         4   1.0    0
+```
+
+**ZINC ID 查询**（已知 ZINC ID 时）：
+
+```python
+from autodock import lookup_zinc_id
+
+result = lookup_zinc_id("ZINC000000000001")
+# 扫描 tranche index 文件定位，返回 SMILES 和属性
+if result:
+    print(result['smiles'], result['h_donors'], result['logp'])
+```
+
+**tranche 代码解析**（ZINC 文件名编码规则）：
+
+```python
+from autodock import parse_zinc_tranche
+
+# H{h}P{p_logp}M{mw_bucket}-{phase}  → h_donors, logp, mw, phase
+parse_zinc_tranche("H05P035M400-0")
+# {'h_donors': 5, 'logp': 3.5, 'mw': 400, 'phase': 0}
+```
+
+**注意**：ZINC22 tranche 文件在 `files.docking.org/zinc22/zinc-22g/`，需要 `User-Agent: curl/7.70+`，函数内部已处理。
 
 ---
 
