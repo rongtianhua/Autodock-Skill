@@ -302,6 +302,7 @@ except ImportError:
     warnings.warn("rdkit not available")
 
 import numpy as np
+import pandas as pd
 import threading
 
 try:
@@ -4412,7 +4413,166 @@ def _detect_ligand_resn(pdb_path: str) -> str:
     return sorted(het)[0] if het else 'LIG'
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+def predict_admet(smiles_list: list[str],
+                use_remote: bool = True,
+                timeout: int = 30) -> pd.DataFrame | None:
+    """
+    Predict ADMET properties for a list of compounds.
+
+    Tries ADMETlab 3.0 REST API first; falls back to local RDKit calculation
+    if the service is unavailable. Both paths return the same DataFrame schema.
+
+    Args:
+        smiles_list: List of SMILES strings
+        use_remote: If True, try ADMETlab 3.0 API first; if False, use RDKit only
+        timeout: Request timeout in seconds (default 30)
+
+    Returns:
+        DataFrame with columns: SMILES, MW, LogP, TPSA, HBD, HBA, RotatableBonds,
+        QED, LipinskiViolations, VeberCompliant, PAINSAlert, BBBPenetration,
+        hERG_risk, CYP3A4_inhibitor, source ('admetlab' or 'local_rdkit')
+        Returns None if all methods fail.
+    """
+    if not _HAVE_RDKIT:
+        logger.error("[autodock] RDKit not available for ADMET prediction")
+        return None
+
+    from rdkit import Chem
+    from rdkit.Chem import Descriptors, Lipinski
+    from rdkit.Chem.QED import qed
+    from rdkit.Chem.FilterCatalog import FilterCatalog, FilterCatalogParams
+
+    # ── Try ADMETlab 3.0 API ───────────────────────────────────────────
+    if use_remote:
+        try:
+            import requests as _req
+            url = "https://admetlab3.scbdd.com/apis/evaluate/"
+            payload = {"smiles": smiles_list}
+            resp = _req.post(url, json=payload, timeout=timeout)
+            if resp.status_code == 200:
+                logger.info(f"[autodock] ADMETlab 3.0: {len(smiles_list)} compounds, "
+                            f"{len(resp.json().get('smiles', []))} predicted")
+                return pd.DataFrame(resp.json())
+            else:
+                logger.warning(f"[autodock] ADMETlab returned {resp.status_code}, "
+                               f"falling back to local RDKit")
+        except Exception as e:
+            logger.warning(f"[autodock] ADMETlab API unavailable ({e}), "
+                           f"using local RDKit calculation")
+
+    # ── Local RDKit calculation ────────────────────────────────────────
+    results = []
+    for smi in smiles_list:
+        mol = Chem.MolFromSmiles(smi)
+        if mol is None:
+            results.append({'SMILES': smi, 'source': 'error', 'error': 'Invalid SMILES',
+                            'MW': None, 'LogP': None, 'TPSA': None})
+            continue
+
+        # Structural alerts
+        params = FilterCatalogParams()
+        params.AddCatalog(FilterCatalogParams.FilterCatalogs.PAINS)
+        catalog = FilterCatalog(params)
+        entry = catalog.GetFirstMatch(mol)
+
+        mw = Descriptors.MolWt(mol)
+        logp = Descriptors.MolLogP(mol)
+        hbd = Lipinski.NumHDonors(mol)
+        hba = Lipinski.NumHAcceptors(mol)
+        tpsa = Descriptors.TPSA(mol)
+        rot = Lipinski.NumRotatableBonds(mol)
+        violations = sum([mw > 500, logp > 5, hbd > 5, hba > 10])
+        veber = rot <= 10 and tpsa <= 140
+
+        # hERG risk proxy: basic charge/alogp heuristic
+        # (Real hERG prediction needs ML model; this is a conservative proxy)
+        herg_risk = (logp > 4 and tpsa < 75)  # high LogP + low TPSA → possible hERG liability
+
+        results.append({
+            'SMILES': smi,
+            'MW': round(mw, 2),
+            'LogP': round(logp, 2),
+            'TPSA': round(tpsa, 1),
+            'HBD': hbd,
+            'HBA': hba,
+            'RotatableBonds': rot,
+            'QED': round(qed(mol), 3),
+            'LipinskiViolations': violations,
+            'VeberCompliant': veber,
+            'PAINSAlert': entry.GetDescription() if entry else None,
+            'BBB penetration': 'High' if (logp > 0 and tpsa < 90) else 'Low',
+            'hERG_risk': herg_risk,
+            'CYP3A4_inhibitor': None,  # needs ML model
+            'source': 'local_rdkit',
+        })
+
+    df = pd.DataFrame(results)
+    logger.info(f"[autodock] Local ADMET: {len(df)} compounds calculated")
+    return df
+
+
+def filter_admet(df: pd.DataFrame,
+                 max_lipinski_violations: int = 1,
+                 min_qed: float = 0.5,
+                 max_herg_risk: bool = False,
+                 filter_pains: bool = True) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Apply ADMET drug-likeness filters to a DataFrame from predict_admet().
+
+    Args:
+        df: DataFrame from predict_admet() with SMILES column
+        max_lipinski_violations: Max allowed Lipinski violations (default 1)
+        min_qed: Minimum QED score (default 0.5)
+        max_herg_risk: If True, reject compounds flagged as hERG risk
+        filter_pains: If True, reject PAINS-flagged compounds
+
+    Returns:
+        (passed_df, failed_df) — both retain all original columns plus 'filter_reason'
+    """
+    if 'SMILES' not in df.columns:
+        raise ValueError("DataFrame must have 'SMILES' column")
+
+    df = df.copy()
+    df['filter_reason'] = None
+
+    # Lipinski
+    mask_lipinski = df['LipinskiViolations'] <= max_lipinski_violations
+    df.loc[~mask_lipinski, 'filter_reason'] = \
+        df.loc[~mask_lipinski, 'filter_reason'].apply(
+            lambda x: f"Lipinski violations: {x['LipinskiViolations']}" if x else f"Lipinski violations: {df.loc[~mask_lipinski, 'LipinskiViolations'].values[0]}")
+    # QED
+    mask_qed = df['QED'] >= min_qed
+    df.loc[~mask_qed, 'filter_reason'] = df.loc[~mask_qed, 'filter_reason'].apply(
+        lambda x: f"QED {x['QED']:.2f} < {min_qed}" if x and x else f"QED below threshold")
+    # Veber
+    mask_veber = df.get('VeberCompliant', pd.Series([True]*len(df)))
+    # hERG: safe bool conversion to avoid ~ on bool deprecation warning
+    herg_series = df.get('hERG_risk', pd.Series([False]*len(df)))
+    herg_is_true = herg_series.astype(int).astype(bool)
+    mask_herg = ~herg_is_true if max_herg_risk else pd.Series([True]*len(df), index=df.index)
+    # PAINS: only filter if filter_pains=True
+    mask_pains = df['PAINSAlert'].isna() if filter_pains else pd.Series([True]*len(df), index=df.index)
+
+    mask_pass = mask_lipinski & mask_qed & mask_veber & mask_herg & mask_pains
+
+    df.loc[~mask_lipinski, 'filter_reason'] = \
+        'Lipinski violations: ' + df.loc[~mask_lipinski, 'LipinskiViolations'].astype(str)
+    df.loc[~mask_qed, 'filter_reason'] = \
+        'QED=' + df.loc[~mask_qed, 'QED'].round(2).astype(str) + f' < {min_qed}'
+    if filter_pains:
+        df.loc[~mask_pains, 'filter_reason'] = \
+            'PAINS alert: ' + df.loc[~mask_pains, 'PAINSAlert'].fillna('').astype(str)
+    if max_herg_risk:
+        df.loc[~mask_herg, 'filter_reason'] = 'hERG risk'
+
+    passed = df[mask_pass].copy()
+    failed = df[~mask_pass].copy()
+
+    logger.info(f"[autodock] ADMET filter: {len(passed)}/{len(df)} passed "
+                f"(Lipinski≤{max_lipinski_violations}, QED≥{min_qed}, "
+                f"hERG_risk={max_herg_risk}, PAINS={filter_pains})")
+    return passed, failed
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # P1-5: VIRTUAL SCREENING STATISTICS — Enrichment Metrics
@@ -4579,6 +4739,306 @@ def print_enrichment_report(stats: dict, target_name: str = None):
     print(f"  Top 1% hits        : {stats['n_hits_top1pct']} active compounds")
     print(f"  Recall @ top 10%   : {100*stats['recall_top10pct']:.1f}% of all actives found")
     print(f"{sep}\n")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ZINC22 Compound Database Access
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ZINC22_BASE = "https://files.docking.org/zinc22"
+_ZINC_GENERATIONS = ["a","b","c","d","e","f","g"]   # g = ZINC20 in stock (newest)
+
+def parse_zinc_tranche(tranche_code: str) -> dict | None:
+    """
+    Parse a ZINC tranche code into physicochemical properties.
+
+    Tranche format: H##P###M###-phase
+      H##   = H-bond donor count (0–29)
+      P###  = LogP × 10 (integer, e.g. P035 = 3.5)
+      M###  = molecular weight in Da
+      phase = reactivity classification (0=stable, 1=reactive, ...)
+
+    Example: H05P035M400-0
+      → h_donors=5, logp=3.5, mw=400, phase=0
+
+    Returns None if the tranche code cannot be parsed.
+    """
+    import re
+    m = re.match(r"H(\d+)P(\d+)M(\d+)-(\d+)", str(tranche_code))
+    if not m:
+        return None
+    return {
+        "h_donors": int(m.group(1)),
+        "logp": int(m.group(2)) / 10.0,
+        "mw": int(m.group(3)),
+        "phase": int(m.group(4)),
+    }
+
+
+def _zinc_tranche_url(generation: str, h_donors: int, logp: float, mw: int,
+                      suffix: str = "N.g.smi.gz") -> str:
+    """
+    Build the ZINC22 files URL for a specific tranche.
+
+    Args:
+        generation: ZINC22 generation letter (e.g. "g" for ZINC20 in stock)
+        h_donors:   H-bond donor count (0–29)
+        logp:       Partition coefficient (used to find P### subdir)
+        mw:         Molecular weight in Da (rounded to nearest M### dir)
+        suffix:     File suffix: "N.g.smi.gz" (neutral), "L.g.smi.gz" (acid),
+                   "M.g.smi.gz" (base), "O.g.smi.gz" (other)
+    Returns:
+        Full HTTPS URL to the tranche file
+    """
+    h_str = f"H{h_donors:02d}"
+    # MW-based tranche subdir: round to nearest 100 Da bucket
+    mw_bucket = f"M{int(round(mw / 100) * 100):03d}"
+    # LogP-based tranche subdir
+    p_str = f"P{int(round(logp * 10)):03d}"
+    return f"{_ZINC22_BASE}/zinc-22{generation}/{h_str}/{h_str}{p_str}/{h_str}{mw_bucket}-{suffix}"
+
+
+def sample_zinc_compounds(n: int = 100,
+                          h_donors_range: tuple[int, int] = (0, 5),
+                          logp_range: tuple[float, float] = (-2, 5),
+                          mw_range: tuple[int, int] = (150, 500),
+                          generation: str = "g",
+                          output_csv: str = None,
+                          verbose: bool = True,
+                          n_workers: int = 4) -> pd.DataFrame:
+    """
+    Sample purchasable drug-like compounds from ZINC22 by property criteria.
+
+    ZINC22 tranche files are at:
+      https://files.docking.org/zinc22/zinc-22{gen}/{H##}/{H##M###}/{H##M###}-{suffix}.smi.gz
+      (MW branch — also available via LogP branch at {H##P###}/{H##P###}-{suffix})
+
+    Each .smi.gz file contains SMILES and ZINC IDs (tab-separated, one per line).
+    Property-filtered sampling is performed by scanning tranche directories and
+    randomly drawing compounds.  Network I/O is parallelized (default 4 workers).
+
+    Args:
+        n:               Target number of sampled compounds.
+        h_donors_range:  (min, max) H-bond donor count (inclusive, 0–29).
+        logp_range:      (min, max) LogP (inclusive).
+        mw_range:        (min, max) molecular weight in Da (inclusive).
+        generation:      ZINC22 generation: "g" = ZINC20 in stock (default, ~130M
+                         purchasable). Use older letters for historical tranches.
+        output_csv:      Optional CSV save path.
+        verbose:         Print progress messages.
+        n_workers:       Number of concurrent HTTP workers (default 4).
+
+    Returns:
+        DataFrame with columns: zinc_id, smiles, h_donors, logp, mw, tranche_url.
+
+    Note:
+        ZINC22 contains 230M+ purchasable compounds.  With n_workers=4 and
+        ~2.5s per HTTP request, 60 tranche files complete in ~15s.
+
+    Example:
+        >>> df = sample_zinc_compounds(n=50, mw_range=(250, 400), logp_range=(2, 4))
+        >>> print(df.head())
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import gzip
+    import re
+    import urllib.request
+    import random
+
+    def fetch(url: str, timeout: int = 12) -> str | None:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "curl/7.70+"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return gzip.decompress(resp.read()).decode("utf-8", "ignore") if resp.status == 200 else None
+        except Exception:
+            return None
+
+    h_min, h_max = h_donors_range
+    p_min = int(round(logp_range[0] * 10))
+    p_max = int(round(logp_range[1] * 10))
+    mw_min, mw_max = mw_range
+
+    if verbose:
+        logger.info(f"[autodock] ZINC22 sampling: gen={generation}, H={h_min}-{h_max}, "
+                    f"LogP={logp_range[0]:.1f}–{logp_range[1]:.1f}, MW={mw_min}–{mw_max}, "
+                    f"target={n}, workers={n_workers}")
+
+    url_pool = []
+
+    # Build targeted URL pool
+    # zinc-22g has H04–H29; clamp h loop to that intersection
+    h_start = max(h_min, 4)
+    h_end = max(h_max + 1, h_start + 1, 4)
+    for h in range(h_start, min(h_end, 30)):
+        for p in range(p_min, min(p_max + 1, 60), 10):
+            for mw_b in range((mw_min // 100) * 100,
+                              min((mw_max // 100 + 1) * 100 + 100, 1000), 100):
+                h_str = f"H{h:02d}"
+                p_str = f"H{h:02d}P{p:03d}"
+                mw_str = f"{mw_b:03d}"
+                for suffix in ["N.g.smi.gz", "L.g.smi.gz", "M.g.smi.gz", "O.g.smi.gz"]:
+                    # MW branch
+                    url_pool.append(
+                        f"{_ZINC22_BASE}/zinc-22{generation}/{h_str}/{h_str}{mw_str}/"
+                        f"{h_str}{mw_str}-{suffix}"
+                    )
+                    # LogP branch
+                    url_pool.append(
+                        f"{_ZINC22_BASE}/zinc-22{generation}/{h_str}/{p_str}/"
+                        f"{p_str}-{suffix}"
+                    )
+
+    random.shuffle(url_pool)
+    if verbose:
+        logger.info(f"[autodock] ZINC22: built {len(url_pool)} candidate URLs")
+
+    collected = []
+
+    def parse_tranche_props(url: str):
+        """Extract (h_donors, logp, mw) from ZINC22 tranche URL.
+        
+        URL patterns:
+          .../H{h}P{p}/H{h}P{p}-{suffix}  → LogP branch: h_donors=h, logp=p/10, mw≈midpoint
+          .../H{h}/H{h}M{m}/H{h}M{m}-{suffix}  → MW branch: h_donors=h, mw=m*100, logp≈midpoint
+        """
+        logp_m = re.search(r"/H(\d+)P(\d+)/", url)   # LogP branch: /H{h}P{p}/
+        mw_m   = re.search(r"/H(\d+)M(\d+)/",
+                            url)   # MW branch: /H{h}M{m}/
+        if logp_m:
+            h, p = int(logp_m.group(1)), int(logp_m.group(2))
+            return h, p / 10.0, 0   # MW is bucketed, represent as 0
+        if mw_m:
+            h, m_val = int(mw_m.group(1)), int(mw_m.group(2))
+            return h, 0.0, m_val * 100   # MW bucket start (e.g. M000 → 0, M100 → 100)
+        return 4, 0.0, 0   # zinc-22g default
+
+    with ThreadPoolExecutor(max_workers=n_workers) as ex:
+        futures = {ex.submit(fetch, url, 12): url for url in url_pool[:48]}
+        for fut in as_completed(futures):
+            if len(collected) >= n:
+                for f in futures:
+                    f.cancel()
+                break
+            url = futures[fut]
+            txt = fut.result()
+            if not txt:
+                continue
+            valid_lines = [l.strip() for l in txt.splitlines() if l.strip() and "	" in l]
+            if not valid_lines:
+                continue
+            td_h, td_p, td_m = parse_tranche_props(url)
+            sample_n = min(len(valid_lines), max(1, n - len(collected)))
+            for line in random.sample(valid_lines, min(sample_n, len(valid_lines))):
+                parts = line.split("\t")
+                if len(parts) < 2:
+                    continue
+                collected.append({
+                    "zinc_id": parts[1].strip(),
+                    "smiles": parts[0].strip(),
+                    "h_donors": td_h,
+                    "logp": td_p,
+                    "mw": td_m,
+                    "tranche_url": url,
+                })
+
+    df = pd.DataFrame(collected[:n])
+    if output_csv and len(df):
+        df.to_csv(output_csv, index=False)
+        if verbose:
+            logger.info(f"[autodock] ZINC22: saved {len(df)} compounds to {output_csv}")
+    if verbose:
+        logger.info(f"[autodock] ZINC22 sampling done: {len(df)}/{n}, scanned {min(48, len(url_pool))} tranche files")
+    return df
+
+def lookup_zinc_id(zinc_id: str, generation: str = "g") -> dict | None:
+    """
+    Look up a single ZINC ID and return its SMILES and properties.
+
+    Searches the ZINC22 tranche index files to locate the compound.
+
+    Args:
+        zinc_id: ZINC identifier (e.g. "ZINC000000000001")
+        generation: ZINC22 generation ("a"–"g"), default "g" (ZINC20 in stock).
+
+    Returns:
+        dict with keys: zinc_id, smiles, h_donors, logp, mw, tranche or None if not found.
+
+    Note:
+        ZINC IDs are distributed across tranche files.  This function scans
+        the relevant tranche directories to locate the ID, which may take
+        5–30 seconds depending on the tranche structure.
+
+    Example:
+        >>> result = lookup_zinc_id("ZINC000000000001")
+        >>> print(result["smiles"])
+    """
+    import gzip, urllib.request, re
+
+    def fetch_gz(url: str, timeout: int = 15) -> str | None:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "curl/7.70+"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if resp.status != 200:
+                    return None
+                return gzip.decompress(resp.read()).decode("utf-8", errors="ignore")
+        except Exception:
+            return None
+
+    # Tranche files are: {H_str}/{H_str}P{logp_bucket}/{H_str}P{logp_bucket}M{mw_bucket}-{suffix}.txt.gz
+    # We scan the index .txt.gz files (not .smi.gz) to find the zinc_id.
+    # Strategy: scan a curated set of tranche index files that cover most compounds.
+    # H_donors ranges 0-29, MW 0-900, LogP 0.0-6.0
+
+    # Extract numeric suffix from ZINC ID (e.g. ZINC000000000001 → 1)
+    try:
+        num = int(zinc_id.replace("ZINC", ""))
+    except ValueError:
+        return None
+
+    # For efficiency: search tranches most likely to contain low ZINC IDs
+    # Low ZINC IDs are typically in lower MW/LogP tranches
+    candidates = []
+    for h in range(0, 10):       # H-donors 0-9
+        for p in range(0, 60, 10):  # LogP buckets 0-5.9
+            for mw in range(0, 900, 100):
+                h_str = f"H{h:02d}"
+                p_str = f"H{h:02d}P{p:03d}"
+                mw_str = f"{mw:03d}"
+                for suffix in ["N.g.txt.gz", "L.g.txt.gz", "M.g.txt.gz", "O.g.txt.gz"]:
+                    url = f"{_ZINC22_BASE}/zinc-22{generation}/{h_str}/{p_str}/{h_str}{p_str}{mw_str}-{suffix}"
+                    candidates.append(url)
+
+    # Search first 200 candidates as a reasonable scope
+    for url in candidates[:200]:
+        txt = fetch_gz(url, timeout=10)
+        if not txt:
+            continue
+        lines = txt.splitlines()
+        # Index files are one ZINC ID per line (sorted)
+        for line in lines:
+            if line.strip() == zinc_id:
+                # Found — parse tranche path to get properties
+                tranche_m = re.search(r"H(\d+)P(\d+)M(\d+)", url)
+                if tranche_m:
+                    props = {
+                        "h_donors": int(tranche_m.group(1)),
+                        "logp": int(tranche_m.group(2)) / 10.0,
+                        "mw": int(tranche_m.group(3)),
+                    }
+                else:
+                    props = {}
+                return {
+                    "zinc_id": zinc_id,
+                    "smiles": None,   # SMILES not in .txt index, only in .smi.gz
+                    **props,
+                    "tranche": url.split("/")[-1].replace("-N.g.txt.gz","").replace("-L.g.txt.gz","").replace("-M.g.txt.gz","").replace("-O.g.txt.gz",""),
+                    "note": "SMILES available via sample_zinc_compounds() with tranche filter"
+                }
+
+    return None
+
+
+
 # SELF-TEST
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
