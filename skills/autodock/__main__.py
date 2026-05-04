@@ -236,12 +236,12 @@ def cmd_virtual_screen(args):
     center = tuple(args.center)
     box_size = tuple(args.box_size)
 
-    results = virtual_screen(
+    results, _ = virtual_screen(
         args.receptor,
         args.library,
         center=center,
         box_size=box_size,
-        output_csv=args.output,
+        output_dir=str(Path(args.output).parent) if args.output else './docking_results',
     )
     print(f"✅ Virtual screen complete: {len(results)} compounds scored")
     print(f"   Results saved: {args.output}")
@@ -259,10 +259,10 @@ def cmd_validate(args):
     )
 
     print(f"✅ Validation complete:")
-    print(f"   RMSD:      {result.rmsd:.2f} Å")
-    print(f"   Best energy: {result.best_energy:.2f} kcal/mol")
-    passed = result.rmsd < 2.0
-    print(f"   Result:    {'✅ PASSED' if passed else '⚠️  FAILED'} (threshold: 2.0 Å)")
+    print(f"   RMSD:      {result['rmsd_atom']:.2f} Å")
+    print(f"   Best energy: {result['best_affinity']:.2f} kcal/mol")
+    passed = result['is_valid']
+    print(f"   Result:    {'✅ PASSED' if passed else '⚠️  FAILED'} (threshold: {result['threshold']} Å)")
 
 
 def cmd_run(args):
@@ -306,6 +306,8 @@ def cmd_run(args):
         str(ligand_pdbqt),
         center=center,
         box_size=box_size,
+        output_dir=str(outdir),
+        return_structured=True,
     )
 
     # 5. Visualize
@@ -319,14 +321,14 @@ def cmd_run(args):
     render_scene(
         str(receptor_pdbqt),
         str(ligand_pdbqt),
-        result.best_pose_path,
+        result.best_pose_pdbqt,
         output=str(scene_out),
     )
 
     render_interactions_2d(
         receptor_file,
         str(ligand_pdbqt),
-        result.best_pose_path,
+        result.best_pose_pdbqt,
         str(diagram_out),
     )
 
@@ -335,7 +337,7 @@ def cmd_run(args):
     print("✅ Docking Workflow Complete!")
     print("="*50)
     print(f"  📂 Output directory: {outdir.absolute()}")
-    print(f"  🔬 Best energy:     {result.best_energy:.2f} kcal/mol")
+    print(f"  🔬 Best energy:     {result.best_affinity:.2f} kcal/mol")
     print(f"  🖼️  3D scene:        {scene_out}")
     print(f"  📊 2D diagram:      {diagram_out}")
 

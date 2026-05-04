@@ -86,7 +86,7 @@ python -m autodock -v dock ...        # 详细调试信息
 
 ```python
 import sys
-sys.path.insert(0, '~/.openclaw/workspace/skills/')
+sys.path.insert(0, '/Users/allenrong/.openclaw/workspace/skills/autodock/')
 from autodock import (
     fetch_protein_pdb, fetch_molecule_pubchem,
     prepare_receptor, prepare_ligand,
@@ -606,7 +606,7 @@ composite_summary(
 
 ```python
 import sys
-sys.path.insert(0, '~/.openclaw/workspace/skills/')
+sys.path.insert(0, '/Users/allenrong/.openclaw/workspace/skills/autodock/')
 from autodock import (
     fetch_protein_alphafold, fetch_molecule_pubchem,
     prepare_receptor, prepare_ligand,

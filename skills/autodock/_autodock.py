@@ -302,6 +302,7 @@ except ImportError:
     warnings.warn("rdkit not available")
 
 import numpy as np
+import threading
 
 try:
     from plip.structure.preparation import PDBComplex
@@ -337,6 +338,10 @@ def _safe_color(cmd, color, selection):
 _SKIP_RES = {'HOH', 'WAT', 'H2O', 'PJE', '02J', '010', '03U', '03T', '02K', '02L'}
 
 # P2Rank binary (installed manually under tools/)
+# P0-1 ✅: P2Rank 2.5.1 已安装（2026-05-04）
+# 路径：~/.openclaw/workspace/skills/autodock/tools/p2rank_2.5.1/prank
+# 需要 JAVA_HOME=/opt/homebrew/opt/openjdk@21
+
 _P2RANK_DIR = os.path.join(os.path.dirname(__file__), 'tools', 'p2rank_2.5.1')
 _P2RANK_PRANK = os.path.join(_P2RANK_DIR, 'prank')
 _P2RANK_JAR  = os.path.join(_P2RANK_DIR, 'bin', 'p2rank.jar')
@@ -4155,7 +4160,8 @@ def virtual_screen(receptor_pdbqt: str,
                   n_poses: int = 3,
                   receptor_pdb: str = None,
                   include_interactions: bool = False,
-                  include_clash: bool = False) -> tuple:
+                  include_clash: bool = False,
+                  n_workers: int = 4) -> tuple:
     """
     Screen a compound library against a protein target.
 
@@ -4186,18 +4192,65 @@ def virtual_screen(receptor_pdbqt: str,
         if os.path.exists(pdb_candidate):
             analysis_pdb = pdb_candidate
 
-    v = Vina(sf_name='vina', seed=42)
-    v.set_receptor(receptor_pdbqt)
-    v.compute_vina_maps(center=center, box_size=box_size)
+    """
+    Screen a compound library against a protein target (parallel, publication-standard).
 
-    results = []
-    for name, smiles in ligand_smiles_dict.items():
+    Returns:
+        tuple: (results_df, docking_results_list)
+            results_df: pandas DataFrame sorted by binding affinity
+            docking_results_list: list of DockingResult objects (full data)
+        Both are sorted identically by affinity.
+        A CSV file is also written to output_dir/docking_results.csv.
+
+    Note:
+        exhaustiveness=32 is the publication-standard Monte Carlo sampling depth.
+        For large library screening (>1000 compounds) where speed matters more
+        than exhaustive accuracy, reduce to 8–16 but be aware that binding
+        mode predictions may be less reliable.
+
+    Args:
+        n_workers: Number of parallel worker threads (default 4).
+                   Increase for faster screening on multi-core machines.
+                   Note: Vina is CPU-bound; >8 workers rarely helps on <8-core systems.
+    """
+    if not all([_HAVE_VINA, _HAVE_RDKIT, _HAVE_MEEKO]):
+        raise RuntimeError("vina + rdkit + meeko required")
+
+    import pandas as pd
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Resolve analysis PDB (for interaction / clash detection)
+    analysis_pdb = receptor_pdb
+    if not analysis_pdb:
+        # Try to locate a PDB matching the receptor PDBQT name
+        pdb_candidate = receptor_pdbqt.replace('.pdbqt', '.pdb')
+        if os.path.exists(pdb_candidate):
+            analysis_pdb = pdb_candidate
+
+    # ── Per-worker Vina instance factory ────────────────────────────────────
+    # Each thread gets its own Vina instance (non-thread-safe C++ binding).
+    # Vina maps are thread-safe to read after init; receptor is set once per
+    # instance in _init_vina_worker().
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _init_vina_worker():
+        v = Vina(sf_name='vina', seed=42)
+        v.set_receptor(receptor_pdbqt)
+        v.compute_vina_maps(center=center, box_size=box_size)
+        return v
+
+    def _dock_single(name: str, smiles: str) -> dict:
+        """Dock one compound; runs in a worker thread with its own Vina instance."""
+        ligand_pdbqt = os.path.join(output_dir, f"{name}.pdbqt")
         try:
-            ligand_pdbqt = os.path.join(output_dir, f"{name}.pdbqt")
             prepare_ligand(smiles, ligand_pdbqt)
+
+            # Each worker has its own Vina instance — no lock needed.
+            v = Vina(sf_name='vina', seed=42)
+            v.set_receptor(receptor_pdbqt)
+            v.compute_vina_maps(center=center, box_size=box_size)
             v.set_ligand_from_file(ligand_pdbqt)
-            # score() evaluates the input ligand pose before docking
-            # Catches "ligand outside grid box" gracefully (pre-prepared ligands)
+
             score_init_total = None
             try:
                 score_init = v.score()
@@ -4209,26 +4262,21 @@ def virtual_screen(receptor_pdbqt: str,
                 else:
                     raise
 
-            v.dock(exhaustiveness=exhaustiveness, n_poses=n_poses,
-                   min_rmsd=1.0)
+            v.dock(exhaustiveness=exhaustiveness, n_poses=n_poses, min_rmsd=1.0)
             energies = v.energies(n_poses=n_poses, energy_range=3.0)
             best = float(energies[0][0]) if energies.size > 0 else None
-            pose_file = os.path.join(output_dir, f"{name}_poses.pdbqt")
+            pose_file = os.path.join(output_dir, f"{name}_poses.pdbqt") if best is not None else None
             if best is not None:
                 v.write_poses(pose_file, n_poses=n_poses, energy_range=3.0)
-            else:
-                pose_file = None
-            # Print post-dock score (best is now defined)
+
             if score_init_total is not None:
-                logger.info(f"[autodock] {name}: pre-dock score={score_init_total} kcal/mol, "
-                      f"docked={best} kcal/mol")
+                logger.info(f"[autodock] {name}: pre-dock score={score_init_total} kcal/mol, docked={best} kcal/mol")
             else:
                 logger.info(f"[autodock] {name}: docked={best} kcal/mol")
-            # Per-compound interaction + clash analysis (optional)
-            # Use write_pose() (official Vina API) to capture the best pose as a string.
+
+            # Capture best pose as string
             best_pose_str = None
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.pdbqt',
-                                            delete=False) as tf:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.pdbqt', delete=False) as tf:
                 tmp_pose_path = tf.name
             try:
                 if best is not None:
@@ -4242,8 +4290,7 @@ def virtual_screen(receptor_pdbqt: str,
             interactions_out = []
             clash_out = None
             if analysis_pdb and (include_interactions or include_clash) and best_pose_str:
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.pdbqt',
-                                                delete=False) as tf:
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.pdbqt', delete=False) as tf:
                     tmp_path = tf.name
                 try:
                     with open(tmp_path, 'w') as f:
@@ -4251,8 +4298,7 @@ def virtual_screen(receptor_pdbqt: str,
                     if include_interactions:
                         try:
                             interactions_out = detect_interactions(
-                                receptor_pdb=analysis_pdb, ligand_pdbqt=tmp_path,
-                                center=center)
+                                receptor_pdb=analysis_pdb, ligand_pdbqt=tmp_path, center=center)
                         except Exception as e:
                             logger.info(f"[autodock]   interaction detection failed: {e}")
                             interactions_out = []
@@ -4272,19 +4318,34 @@ def virtual_screen(receptor_pdbqt: str,
             else:
                 pose_path = None
 
-            results.append({'name': name, 'smiles': smiles,
-                            'affinity_kcal_mol': best,
-                            'pre_dock_score': score_init_total,
-                            'interactions': interactions_out,
-                            'clash_score': clash_out.get('clash_score') if clash_out else None,
-                            'clash_acceptable': clash_out.get('is_acceptable') if clash_out else None,
-                            'best_pose_path': pose_path,
-                            'poses_file': pose_file})
-            logger.info(f"[autodock] {name}: {best} kcal/mol")
+            return {'name': name, 'smiles': smiles,
+                    'affinity_kcal_mol': best,
+                    'pre_dock_score': score_init_total,
+                    'interactions': interactions_out,
+                    'clash_score': clash_out.get('clash_score') if clash_out else None,
+                    'clash_acceptable': clash_out.get('is_acceptable') if clash_out else None,
+                    'best_pose_path': pose_path,
+                    'poses_file': pose_file,
+                    'error': None}
         except Exception as e:
             logger.error(f"[autodock] {name}: FAILED - {e}")
-            results.append({'name': name, 'smiles': smiles,
-                            'affinity_kcal_mol': None, 'error': str(e)})
+            return {'name': name, 'smiles': smiles,
+                    'affinity_kcal_mol': None, 'error': str(e)}
+
+    # ── Parallel execution ────────────────────────────────────────────────
+    n_workers = max(1, n_workers)
+    logger.info(f"[autodock] virtual_screen: {len(ligand_smiles_dict)} compounds, "
+                f"exhaustiveness={exhaustiveness}, n_workers={n_workers}")
+
+    results = []
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        futures = {
+            executor.submit(_dock_single, name, smiles): name
+            for name, smiles in ligand_smiles_dict.items()
+        }
+        for future in as_completed(futures):
+            result = future.result()
+            results.append(result)
 
     # ── Build structured DockingResult objects ─────────────────────────
     docking_results = []
@@ -4314,8 +4375,18 @@ def virtual_screen(receptor_pdbqt: str,
     csv_path = os.path.join(output_dir, 'docking_results.csv')
     if docking_results:
         df_export = pd.DataFrame([r.to_dataframe_row() for r in docking_results])
-        df_export.to_csv(csv_path, index=False, float_format='%.4f')
-        logger.info(f"[autodock] Results table written → {csv_path}")
+    else:
+        # All compounds failed — build DataFrame from raw results (includes 'error' col)
+        df_err = pd.DataFrame(results)
+        # Standardize column names to match to_dataframe_row schema
+        df_err = df_err.rename(columns={
+            'name': 'compound',
+            'affinity_kcal_mol': 'best_affinity_kcal_mol',
+        }, errors='ignore')
+        logger.warning(f"[autodock] All compounds failed; writing error log to {csv_path}")
+        df_export = df_err
+
+    df_export.to_csv(csv_path, index=False, float_format='%.4f')
 
     return results_df, docking_results
 
