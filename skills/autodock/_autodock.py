@@ -314,6 +314,7 @@ except ImportError:
 
 try:
     from meeko import MoleculePreparation, RDKitMolCreate, PDBQTWriterLegacy, Polymer
+    from meeko.polymer import PolymerCreationError
     _HAVE_MEEKO = True
 except ImportError:
     _HAVE_MEEKO = False
@@ -410,7 +411,18 @@ def prepare_receptor(pdb_file: str, output_pdbqt: str,
     # charge_model='gasteiger' writes Gasteiger partial charges to the PDBQT
     # charge field (col 71-76). AD4 atom types are loaded by default.
     mk_prep = MoleculePreparation(charge_model='gasteiger')
-    polymer = Polymer.from_pdb_string(pdb_content, templates, mk_prep)
+    try:
+        polymer = Polymer.from_pdb_string(pdb_content, templates, mk_prep)
+    except PolymerCreationError:
+        # Non-standard residues (e.g. NFH/NFN) fail template matching by default.
+        # Retry with allow_bad_res=True: meeko removes the offending residues and
+        # produces a valid PDBQT for the remaining well-resolved protein.
+        logger.warning(
+            f"[autodock] Some residues in {os.path.basename(pdb_file)}"
+            f" failed template matching — retrying with allow_bad_res=True"
+        )
+        polymer = Polymer.from_pdb_string(
+            pdb_content, templates, mk_prep, allow_bad_res=True)
     rigid_pdbqt, _ = PDBQTWriterLegacy.write_from_polymer(polymer)
 
     os.makedirs(os.path.dirname(output_pdbqt) or '.', exist_ok=True)
@@ -2178,6 +2190,25 @@ def _map_pybel_to_rdk_atom_idx(ligand_pdbqt: str, _cached_lig_rdk=None) -> tuple
 
 
 
+# Map PLIP interaction type (11 keys) -> standardized display name + color
+# H-bond: pdon(蛋白供体)/ldon(配体供体) → 同一显示名
+# Salt bridge: lneg(配体负)/pneg(蛋白负) → 同一显示名
+# π-cation: paro(芳环→正电)/laro(脂肪→正电) → 同一显示名
+PLIP_TYPE_MAP = {
+    'hbonds_pdon': ('H-bond', 'cyan'),
+    'hbonds_ldon': ('H-bond', 'cyan'),
+    'hydrophobic_contacts': ('Hydrophobic', 'orange'),
+    'pistacking': ('π-π', 'green'),
+    'pication_paro': ('π-cation', 'magenta'),
+    'pication_laro': ('π-cation', 'magenta'),
+    'saltbridge_lneg': ('Salt bridge', 'red'),
+    'saltbridge_pneg': ('Salt bridge', 'red'),
+    'halogen_bonds': ('Halogen bond', 'yellow'),
+    'water_bridges': ('Water bridge', 'blue'),
+    'metal_complexes': ('Metal complex', 'gray'),
+}
+
+
 def detect_interactions_plip(receptor_pdb: str,
                             ligand_pdbqt: str,
                             output_dir: str = None) -> tuple:
@@ -2276,33 +2307,13 @@ def detect_interactions_plip(receptor_pdb: str,
             elif itype in ('hbonds_pdon', 'hbonds_ldon'):
                 # Protein atom coords are in item.x/item.y/item.z
                 return (item.a if item.protisdon else item.d), None
-            elif itype in ('pistacking', 'pication_paro', 'pication_laro'):
-                # π-π / π-cation: use ring centroid approach
-                # Find all ring atoms → compute 3D centroid → pick nearest atom to centroid
-                # This is more accurate than just atoms[0]
-                ring_obj = None
-                if itype == 'pistacking':
-                    ring_obj = item.ligandring
-                elif hasattr(item, 'ring') and item.ring:
-                    ring_obj = item.ring  # aromatic ring
-                if ring_obj and hasattr(ring_obj, 'atoms') and ring_obj.atoms:
-                    atoms = ring_obj.atoms
-                    if len(atoms) == 1:
-                        return atoms[0]
-                    # Compute 3D centroid of all ring atoms
-                    coords = np.array([a.coords for a in atoms])
-                    centroid = coords.mean(axis=0)
-                    # Pick the ring atom nearest to centroid
-                    min_dist = float('inf')
-                    nearest = atoms[0]
-                    for a in atoms:
-                        d = np.linalg.norm(np.array(a.coords) - centroid)
-                        if d < min_dist:
-                            min_dist = d
-                            nearest = a
-                    return nearest, None
-                return None, None
-
+        # Store protein ring centroid for π-π / π-cation rendering
+                prot_center = None
+                if attr == 'pistacking' and hasattr(item, 'proteinring') and item.proteinring:
+                    prot_center = item.proteinring.center
+                elif attr in ('pication_paro', 'pication_laro') and hasattr(item, 'ring') and item.ring:
+                    prot_center = item.ring.center
+                return nearest, prot_center
             elif itype in ('saltbridge_lneg', 'saltbridge_pneg'):
                 # Salt bridges: item is a saltbridge namedtuple with:
                 #   .positive / .negative = ChargeCenter objects (has .atoms[pybel], .center)
@@ -2346,22 +2357,9 @@ def detect_interactions_plip(receptor_pdb: str,
             return None, None
 
         # Map PLIP interaction type -> our standardized type + color
-        TYPE_MAP = {
-            'hbonds_pdon': ('H-bond', 'cyan'),
-            'hbonds_ldon': ('H-bond', 'cyan'),
-            'hydrophobic_contacts': ('Hydrophobic', 'orange'),
-            'pistacking': ('π-π', 'green'),
-            'pication_paro': ('π-cation', 'magenta'),
-            'pication_laro': ('π-cation', 'magenta'),
-            'saltbridge_lneg': ('Salt bridge', 'red'),
-            'saltbridge_pneg': ('Salt bridge', 'red'),
-            'halogen_bonds': ('Halogen bond', 'yellow'),
-            'water_bridges': ('Water bridge', 'blue'),
-            'metal_complexes': ('Metal complex', 'gray'),
-        }
-
+        # (PLIP_TYPE_MAP is now defined at module level)
         interactions = []
-        for attr, (itype, color) in TYPE_MAP.items():
+        for attr, (itype, color) in PLIP_TYPE_MAP.items():
             items = getattr(pli, attr, [])
             if not items:
                 continue
@@ -2446,7 +2444,7 @@ def detect_interactions_plip(receptor_pdb: str,
                     elif attr in ('pistacking', 'pication_paro', 'pication_laro'):
                         # π interactions use ring centroid (prot_center already handled)
                         pass
-                    
+
                     if prot_atom and hasattr(prot_atom, 'coords'):
                         px, py, pz = prot_atom.coords
                     else:
@@ -2465,10 +2463,11 @@ def detect_interactions_plip(receptor_pdb: str,
                     'ligand_atom_idx': rdk_idx,
                     'distance': dist_val,
                     'description': desc,
-                    'protisdon': getattr(item, 'protisdon', None),   # for H-bond arrow direction
+                    'protisdon': getattr(item, 'protisdon', None),
                     'prot_x': px,
                     'prot_y': py,
                     'prot_z': pz,
+                    '_prot_center': prot_center,   # protein ring center for π-π/π-cation
                 })
 
         # Deduplicate by (type, resn, resi, chain)
@@ -2600,7 +2599,7 @@ def _build_interaction_mol(mol, interactions, lig_rdk=None):
                     is_arrow_dir: True if H-bond direction protein→ligand
     """
     rwmol = Chem.RWMol(mol)
-    dummy_info = []   # (dummy_idx, itype, res_label, lig_atom_idx, arrow_rev)
+    dummy_info = []   # (dummy_idx, itype, res_label, lig_atom_idx, arrow_rev, prot_c)
     seen = {}          # (itype, resn, resi, chain) → dummy_idx
 
     for interaction in interactions:
@@ -2609,24 +2608,17 @@ def _build_interaction_mol(mol, interactions, lig_rdk=None):
         resi    = interaction.get('resi', '?')
         chain   = interaction.get('chain', '')
         lig_idx = interaction.get('ligand_atom_idx')  # may be None
+        prot_c  = interaction.get('_prot_center')      # protein center (for π-π/π-cation/salt-bridge/metal)
 
         # ── Resolve ligand atom index ───────────────────────────────────────
-        if lig_idx is None and lig_rdk is not None:
-            # Fallback: use the protein atom position → find nearest ligand atom
-            # (salt bridges / metal complexes often lack direct pybel atom mapping)
-            pass  # handled below after we get protein coords
-
         if lig_idx is None or lig_idx < 0:
-            # Fallback: nearest ligand atom to the protein interaction partner
-            # (salt bridges / metal complexes / water bridges with no direct pybel atom mapping)
-            prot_center = interaction.get('_prot_center')
+            # Fallback: nearest ligand atom to the protein interaction center
             prot_x = interaction.get('prot_x')
             prot_y = interaction.get('prot_y')
             prot_z = interaction.get('prot_z')
-            
-            # Prefer _prot_center (set for salt bridges via charge.center)
-            if prot_center and isinstance(prot_center, (list, tuple)) and len(prot_center) >= 3:
-                prot_x, prot_y, prot_z = prot_center[0], prot_center[1], prot_center[2]
+            # Prefer _prot_center (set for salt bridges via charge.center, π-π via proteinring.center)
+            if prot_c and isinstance(prot_c, (list, tuple)) and len(prot_c) >= 3:
+                prot_x, prot_y, prot_z = prot_c[0], prot_c[1], prot_c[2]
             
             if prot_x is not None and lig_rdk is not None:
                 try:
@@ -2639,13 +2631,12 @@ def _build_interaction_mol(mol, interactions, lig_rdk=None):
                         if d < min_dist:
                             min_dist = d
                             nearest_idx = atom_i
-                    if nearest_idx is not None and min_dist <= 5.0:  # within 5 Å
+                    if nearest_idx is not None and min_dist <= 5.0:
                         lig_idx = nearest_idx
                 except ValueError:
                     pass
 
             if lig_idx is None or lig_idx < 0:
-                # Still cannot map — skip this interaction
                 continue
 
         # ── Residue label ────────────────────────────────────────────────────
@@ -2655,7 +2646,7 @@ def _build_interaction_mol(mol, interactions, lig_rdk=None):
         key = (itype, resn, resi, chain)
         if key in seen:
             didx = seen[key]
-            dummy_info.append((didx, itype, res_label, lig_idx, False))
+            dummy_info.append((didx, itype, res_label, lig_idx, False, prot_c))
             continue
 
         # ── Create dummy atom ───────────────────────────────────────────────
@@ -2668,10 +2659,9 @@ def _build_interaction_mol(mol, interactions, lig_rdk=None):
         # ZERO bond to ligand atom
         rwmol.AddBond(int(lig_idx), didx, Chem.BondType.ZERO)
         seen[key] = didx
-        # arrow_rev: if protein is donor (protisdon=True), arrow points protein→ligand (rev=True)
-        # arrow_rev=False: arrow points ligand→protein
+        # arrow_rev: if protein is donor (protisdon=True), arrow points protein→ligand
         arrow_rev = interaction.get('protisdon', False) == True
-        dummy_info.append((didx, itype, res_label, lig_idx, arrow_rev))
+        dummy_info.append((didx, itype, res_label, lig_idx, arrow_rev, prot_c))
 
     # Generate 2D coordinates — RDKit automatically places dummy atoms around the ligand
     AllChem.Compute2DCoords(rwmol)
@@ -2976,6 +2966,11 @@ def render_interactions_2d(receptor_pdb: str,
         logger.info("[autodock] No interactions provided — 2D diagram skipped")
         return False
 
+    # If output_png is None (PDF-only mode), generate a temp path for internal use
+    _png_path_provided = output_png is not None
+    if output_png is None:
+        import tempfile
+        output_png = tempfile.mktemp(suffix='.png')
     output_png = os.path.abspath(output_png)
     os.makedirs(os.path.dirname(output_png) or '.', exist_ok=True)
 
@@ -3039,9 +3034,10 @@ def render_interactions_2d(receptor_pdb: str,
                         Point2D(x_max + margin, y_max + margin))
 
         # ── 5. Draw base molecule with dummy circles ─────────────────────────
+        # dummy_info: (didx, itype, res_label, lig_atom_idx, arrow_rev, prot_c)
         dummy_indices = sorted(set(d[0] for d in dummy_info))
         dummy_colors = {}
-        for didx, itype, _, _lidx, _arrow in dummy_info:
+        for didx, itype, _, _lidx, _arrow, *_ in dummy_info:
             if didx not in dummy_colors:
                 style = INTERACTION_STYLE.get(itype, INTERACTION_STYLE.get('Hydrophobic', {}))
                 dummy_colors[didx] = style.get('color', (0.5, 0.5, 0.5))
@@ -3053,13 +3049,11 @@ def render_interactions_2d(receptor_pdb: str,
         )
 
         # ── 6. Post-processing: draw interaction lines/arrows ───────────────
-        # We draw on TOP of the molecule using pixel coordinates from GetDrawCoords
         drawn_pairs = set()
 
-        for didx, itype, res_label, lig_idx, arrow_rev in dummy_info:
+        for didx, itype, res_label, lig_idx, arrow_rev, prot_c in dummy_info:
             style = INTERACTION_STYLE.get(itype, INTERACTION_STYLE.get('Hydrophobic', {}))
             color = style.get('color', (0.5, 0.5, 0.5))
-            lw = style.get('line_width', 1.8)
             end_style = style.get('end_style', 'dash')
 
             # Get 2D molecular coordinates
@@ -3070,52 +3064,56 @@ def render_interactions_2d(receptor_pdb: str,
             lig_px = drawer.GetDrawCoords(Point2D(lig_pos.x, lig_pos.y))
             dum_px = drawer.GetDrawCoords(Point2D(dum_pos.x, dum_pos.y))
 
-            # Skip if points are coincident (shouldn't happen but guard)
-            dx = dum_px.x - lig_px.x
-            dy = dum_px.y - lig_px.y
+            # Determine draw_from: for π-π/π-cation use protein ring center (prot_c),
+            # for salt-bridge/metal-complex use prot_c if available,
+            # otherwise use dummy circle position
+            if prot_c is not None and itype in ('π-π', 'π-cation', 'Salt bridge', 'Metal complex'):
+                prot_px = drawer.GetDrawCoords(Point2D(prot_c[0], prot_c[1]))
+                draw_from = prot_px
+                draw_to = lig_px
+            else:
+                draw_from = dum_px
+                draw_to = lig_px
+
+            dx = draw_to.x - draw_from.x
+            dy = draw_to.y - draw_from.y
             if (dx*dx + dy*dy) < 1:
                 continue
 
             drawer.SetColour(color)
 
             if end_style == 'arrow':
-                # Directional arrow: H-bond or halogen bond
-                # Convention: arrow points FROM ligand atom TO protein residue
-                # (i.e., direction of interaction flow)
                 if arrow_rev:
                     drawer.DrawArrow(
-                        Point2D(dum_px.x, dum_px.y),
-                        Point2D(lig_px.x, lig_px.y),
+                        Point2D(draw_from.x, draw_from.y),
+                        Point2D(draw_to.x, draw_to.y),
                         False, 0.065, 0.45,
                     )
                 else:
                     drawer.DrawArrow(
-                        Point2D(lig_px.x, lig_px.y),
-                        Point2D(dum_px.x, dum_px.y),
+                        Point2D(draw_to.x, draw_to.y),
+                        Point2D(draw_from.x, draw_from.y),
                         False, 0.065, 0.45,
                     )
 
             elif end_style == 'double':
-                # Double line: π-π, salt bridge, metal complex
                 drawer.DrawLine(
-                    Point2D(lig_px.x, lig_px.y),
-                    Point2D(dum_px.x, dum_px.y),
+                    Point2D(draw_from.x, draw_from.y),
+                    Point2D(draw_to.x, draw_to.y),
                 )
-                # Second line offset perpendicular to the first
                 length = (dx*dx + dy*dy) ** 0.5
                 if length > 0:
-                    nx = -dy / length * 3.0
-                    ny = dx / length * 3.0
+                    nx = -dy / length * 4.0
+                    ny = dx / length * 4.0
                     drawer.DrawLine(
-                        Point2D(lig_px.x + nx, lig_px.y + ny),
-                        Point2D(dum_px.x + nx, dum_px.y + ny),
+                        Point2D(draw_from.x + nx, draw_from.y + ny),
+                        Point2D(draw_to.x + nx, draw_to.y + ny),
                     )
 
             elif end_style == 'dash':
-                # Dashed: hydrophobic, water bridge
                 drawer.DrawLine(
-                    Point2D(lig_px.x, lig_px.y),
-                    Point2D(dum_px.x, dum_px.y),
+                    Point2D(draw_from.x, draw_from.y),
+                    Point2D(draw_to.x, draw_to.y),
                 )
 
             drawn_pairs.add((didx, lig_idx))
@@ -3171,7 +3169,7 @@ def render_interactions_2d(receptor_pdb: str,
                           fill=(40, 40, 40, 255), font=font)
 
         # ── Residue labels near dummy atoms (bottom-left of dummy circles) ───
-        for didx, itype, res_label, lig_idx, _arrow in dummy_info:
+        for didx, itype, res_label, lig_idx, _arrow, _prot_c in dummy_info:
             if not res_label:
                 continue
             pos = conf.GetAtomPosition(didx)
@@ -3213,14 +3211,26 @@ def render_interactions_2d(receptor_pdb: str,
             except Exception as e:
                 logger.info(f"[autodock] SVG→PDF failed: {e}")
 
+        # In PDF-only mode (PNG was a temp file): return True if interactions were built
+        if not _png_path_provided:
+            logger.info(f"[autodock] 2D diagram: PDF-only mode, {'OK' if len(dummy_info) > 0 else 'EMPTY'}")
+            if os.path.exists(output_png):  # might already be deleted
+                try: os.unlink(output_png)
+                except: pass
+            return len(dummy_info) > 0
+
         size = os.path.getsize(output_png)
-        ok = size > 30000  # publication diagram should be ≥30KB at 300dpi
+        # Publication threshold: 20KB at 300dpi (covers small molecules like aspirin at ~29KB;
+        # scales linearly with DPI; broken/molecule-less renders are typically <5KB)
+        min_size = int(20 * 1024 * dpi / 300)
+        ok = size > min_size
         if not ok:
             logger.info(f"[autodock] 2D diagram SUSPECT: only {size} bytes — "
-                  f"molecule may have rendered without bonds (0 bonds) or scaling error. "
+                  f"expected >{min_size} bytes at {dpi}dpi. "
                   f"Check that _read_ligand_from_pdbqt_3d returns a mol with GetNumBonds()>0.")
         logger.info(f"[autodock] 2D diagram: {'OK' if ok else 'SUSPECT'} "
               f"({size // 1024}KB, {dpi}dpi) → {output_png}")
+
         return ok
 
     except Exception as e:
@@ -4984,24 +4994,27 @@ def parse_zinc_tranche(tranche_code: str) -> dict | None:
 def _zinc_tranche_url(generation: str, h_donors: int, logp: float, mw: int,
                       suffix: str = "N.g.smi.gz") -> str:
     """
-    Build the ZINC22 files URL for a specific tranche.
+    Build a ZINC22 tranche URL for a specific property combination.
 
     Args:
         generation: ZINC22 generation letter (e.g. "g" for ZINC20 in stock)
         h_donors:   H-bond donor count (0–29)
         logp:       Partition coefficient (used to find P### subdir)
-        mw:         Molecular weight in Da (rounded to nearest M### dir)
+        mw:         Molecular weight in Da (used for MW branch)
         suffix:     File suffix: "N.g.smi.gz" (neutral), "L.g.smi.gz" (acid),
                    "M.g.smi.gz" (base), "O.g.smi.gz" (other)
+                   NOTE: Only .smi.gz exists; .txt.gz does NOT exist.
     Returns:
         Full HTTPS URL to the tranche file
     """
     h_str = f"H{h_donors:02d}"
-    # MW-based tranche subdir: round to nearest 100 Da bucket
-    mw_bucket = f"M{int(round(mw / 100) * 100):03d}"
-    # LogP-based tranche subdir
+    # LogP branch: H##/H##P###/H##P###-N.g.smi.gz (primary, dense coverage)
     p_str = f"P{int(round(logp * 10)):03d}"
-    return f"{_ZINC22_BASE}/zinc-22{generation}/{h_str}/{h_str}{p_str}/{h_str}{mw_bucket}-{suffix}"
+    url_logp = (
+        f"{_ZINC22_BASE}/zinc-22{generation}/{h_str}/{h_str}{p_str}/"
+        f"{h_str}{p_str}-{suffix}"
+    )
+    return url_logp
 
 
 def sample_zinc_compounds(n: int = 100,
@@ -5081,22 +5094,26 @@ def sample_zinc_compounds(n: int = 100,
                               min((mw_max // 100 + 1) * 100 + 100, 1000), 100):
                 h_str = f"H{h:02d}"
                 p_str = f"H{h:02d}P{p:03d}"
-                mw_str = f"{mw_b:03d}"
+                mw_str = f"M{mw_b:03d}"
                 for suffix in ["N.g.smi.gz", "L.g.smi.gz", "M.g.smi.gz", "O.g.smi.gz"]:
-                    # MW branch
-                    url_pool.append(
-                        f"{_ZINC22_BASE}/zinc-22{generation}/{h_str}/{h_str}{mw_str}/"
-                        f"{h_str}{mw_str}-{suffix}"
-                    )
-                    # LogP branch
-                    url_pool.append(
+                    # LogP branch: H##/H##P###/H##P###-N.g.smi.gz
+                    # (ZINC22 main index; .txt.gz does NOT exist, must use .smi.gz)
+                    url_logp = (
                         f"{_ZINC22_BASE}/zinc-22{generation}/{h_str}/{p_str}/"
                         f"{p_str}-{suffix}"
                     )
+                    url_pool.append(url_logp)
+                    # MW branch: H##/H##M###/H##M###-N.g.smi.gz
+                    # (coarser bucketing by MW; only M000/M100 exist at H05 level)
+                    url_mw = (
+                        f"{_ZINC22_BASE}/zinc-22{generation}/{h_str}/{h_str}{mw_str}/"
+                        f"{h_str}{mw_str}-{suffix}"
+                    )
+                    url_pool.append(url_mw)
 
     random.shuffle(url_pool)
     if verbose:
-        logger.info(f"[autodock] ZINC22: built {len(url_pool)} candidate URLs")
+        logger.info(f"[autodock] ZINC22: built {len(url_pool)} candidate URLs (LogP + MW branches)")
 
     collected = []
 

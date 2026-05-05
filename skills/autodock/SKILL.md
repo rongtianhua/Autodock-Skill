@@ -368,31 +368,32 @@ render_interactions_2d(
 )
 ```
 
-**支持 9 种相互作用类型（均已完整实现 2D 渲染）：**
+**支持 10 种相互作用类型（PLIP 11 key → 8 唯一显示类别）：**
 
 | 类型 | 颜色 | 说明 | 2D 高亮 | 状态 |
 |------|------|------|:------:|------|
-| H-bond (配体供体) | 🔵 青色 | 氢键，配体提供 H | ✅ | ✅ 完整 |
-| H-bond (蛋白供体) | 🔵 青色 | 氢键，蛋白提供 H | ✅ | ✅ 完整 |
-| π-π stacking | 🟢 绿色 | 芳环堆积 | ✅ | ✅ 完整 |
-| π-cation (芳环) | 🟣 紫色 | π-阳离子（芳环-正电）| ✅ | ✅ 完整 |
-| π-cation (脂肪) | 🟣 紫色 | π-阳离子（脂肪-正电）| ✅ | ✅ 完整 |
+| H-bond（蛋白供体） | 🔵 青色 | 蛋白侧提供 H 供体（pdon） | ✅ | ✅ 完整 |
+| H-bond（配体供体） | 🔵 青色 | 配体侧提供 H 供体（ldon） | ✅ | ✅ 完整 |
 | Hydrophobic | 🟠 橙色 | 疏水接触 | ✅ | ✅ 完整 |
-| Salt bridge | 🔴 红色 | 盐桥（双线渲染，坐标来源为带电中心）| ✅ | ✅ 完整 |
-| Halogen bond | 🟡 黄色 | 卤键 | ✅ | ✅ 完整 |
-| Water bridge | 🔷 蓝色 | 水桥（配体原子 item.d，双线渲染）| ✅ | ✅ 完整 |
-| Metal complex | ⚪ 灰色 | 金属络合（双线渲染，坐标来源为金属离子）| ✅ | ✅ 完整 |
+| π-π stacking | 🟢 绿色 | 芳环堆积（环中心 dummy） | ✅ | ✅ 完整 |
+| π-cation（芳环→正电） | 🟣 紫色 | 芳环→正电（paro） | ✅ | ✅ 完整 |
+| π-cation（脂肪→正电） | 🟣 紫色 | 脂肪链→正电（laro） | ✅ | ✅ 完整 |
+| Salt bridge（配体负） | 🔴 红色 | 配体负电基团（lneg，双线） | ✅ | ✅ 完整 |
+| Salt bridge（蛋白负） | 🔴 红色 | 蛋白负电基团（pneg，双线） | ✅ | ✅ 完整 |
+| Halogen bond | 🟡 黄色 | 卤键（Cl/Br/I 参与） | ✅ | ✅ 完整 |
+| Water bridge | 🔷 蓝色 | 水分子桥接（双线） | ✅ | ✅ 完整 |
+| Metal complex | ⚪ 灰色 | 金属离子络合（双线） | ✅ | ✅ 完整 |
 
 **说明：**
-- 所有 9 种相互作用均已实现 2D dummy atom + 分子线/双线/虚线/箭头渲染
-- Salt bridge / Water bridge / Metal complex 使用双线样式（`double`）
-- Salt bridge 的坐标来源为带电中心（charge center）而非单个原子，可能存在亚原子级偏移
-- PLIP 原生报告（XML）始终包含完整的文字描述，不受 2D 坐标精度影响
-- PLIP 定义共 11 种类型（另含 waters/water_bridge 个体计数），本技能覆盖上述 9 种核心相互作用类型
+- PLIP 原始检测 key 共 **11 种**（部分按方向/供体受体拆分为 pdon/ldon/lneg/pneg/paro/laro 等亚型）
+- 合并为 **8 个唯一显示类别**（H-bond / Hydrophobic / π-π / π-cation / Salt bridge / Halogen bond / Water bridge / Metal complex）
+- 上表 10 行：π-cation 按芳环/脂肪拆两行（aro-paro / aro-laro），Salt bridge 按配体/蛋白负拆两行
+- Salt bridge / Water bridge / Metal complex 使用双线样式，dummy atom 位于带电中心而非特定原子
 
 **2D 渲染技术细节（供调试参考）：**
 - ✅ 完整：PLIP 提供完整 pybel Atom 坐标 → RDKit dummy atom → Cairo 渲染
 - ⚠️ 坐标偏移：Salt bridge / Metal complex 使用 charge center / metal ion 坐标，dummy atom 位置为带电中心而非特定原子，可能存在亚原子偏移（<1 Å），但不影响相互作用双线渲染
+- ℹ️ 分类说明：PLIP 原始 key 共 11 种（pdon/ldon、paro/laro、lneg/pneg 等方向拆分），本技能合并为 8 个唯一显示类别（H-bond / Hydrophobic / π-π / π-cation / Salt bridge / Halogen bond / Water bridge / Metal complex）
 
 ---
 

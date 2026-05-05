@@ -53,6 +53,8 @@ from autodock import (
     render_ligand_2d,
     composite_summary,
     autodock_logger,
+    clear_cache,
+    get_cache_info,
 )
 
 
@@ -74,6 +76,19 @@ def cmd_status(args):
     else:
         print("⚠️  Some dependencies missing — run: conda activate autodock313")
         sys.exit(1)
+
+
+def cmd_cache(args):
+    """Show or clear the structure cache"""
+    if args.clear:
+        result = clear_cache(confirm=False)
+        print(f"✅ Cleared {len(result['cleared'])} files, freed {result['size_mb']:.1f} MB")
+    else:
+        info = get_cache_info()
+        print(f"📦 Cache: {info['n_files']} files, {info['size_mb']:.1f} MB")
+        print(f"   Location: {info['cache_dir']}")
+        for fname, size_kb in info['files']:
+            print(f"   - {fname} ({size_kb:.0f} KB)")
 
 
 def cmd_fetch(args):
@@ -135,18 +150,19 @@ def cmd_dock(args):
     center = tuple(args.center)
     box_size = tuple(args.box_size)
 
-    result = dock_ligand(
+    energies, poses, meta = dock_ligand(
         args.receptor,
         args.ligand,
         center=center,
         box_size=box_size,
         exhaustiveness=args.exhaustiveness,
         n_poses=args.n_poses,
+        output_dir=os.path.dirname(args.receptor) or '.',
     )
 
     print(f"✅ Docking complete:")
-    print(f"   Best energy: {result.best_energy:.2f} kcal/mol")
-    print(f"   Best pose:   {result.best_pose_path}")
+    print(f"   Best energy: {energies[0][0]:.2f} kcal/mol")
+    print(f"   Best pose:   {meta.get('best_pose_path', 'N/A')}")
 
 
 def cmd_dock_multi_conformer(args):
@@ -275,8 +291,10 @@ def cmd_run(args):
     print("📥 Step 1: Fetching structures")
     print("="*50)
 
-    receptor_file = fetch_protein_pdb(args.receptor, str(outdir))
-    ligand_file = fetch_molecule_pubchem(args.ligand, str(outdir))
+    receptor_file = fetch_protein_pdb(args.receptor, str(outdir / f"{args.receptor}.pdb"))
+    ligand_result = fetch_molecule_pubchem(args.ligand, output_sdf=str(outdir / f"{args.ligand}.sdf"))
+    ligand_file = ligand_result['sdf_path']
+    ligand_smiles = ligand_result['smiles']
 
     # 2. Prepare
     print("\n" + "="*50)
@@ -287,7 +305,7 @@ def cmd_run(args):
     ligand_pdbqt = outdir / f"{args.ligand}.pdbqt"
 
     prepare_receptor(receptor_file, str(receptor_pdbqt))
-    prepare_ligand(args.ligand, str(ligand_pdbqt), name=args.ligand)
+    prepare_ligand(ligand_smiles, str(ligand_pdbqt), name=args.ligand)
 
     # 3. Find binding site
     print("\n" + "="*50)
@@ -301,14 +319,16 @@ def cmd_run(args):
     print("🧬 Step 4: Running docking")
     print("="*50)
 
-    result = dock_ligand(
+    energies, poses, meta = dock_ligand(
         str(receptor_pdbqt),
         str(ligand_pdbqt),
         center=center,
         box_size=box_size,
         output_dir=str(outdir),
-        return_structured=True,
+        return_structured=False,
     )
+    best_pose = meta.get('best_pose_path', str(outdir / 'docking_best.pdbqt'))
+    best_energy = energies[0][0]
 
     # 5. Visualize
     print("\n" + "="*50)
@@ -318,17 +338,26 @@ def cmd_run(args):
     scene_out = outdir / "docking_scene.png"
     diagram_out = outdir / "interaction_diagram.png"
 
+    # Detect interactions via PLIP (needed for both renderers)
+    try:
+        intx_list, _ = detect_interactions_plip(receptor_file, str(ligand_pdbqt))
+    except Exception as e:
+        logger.warning(f"[autodock] Interaction detection failed: {e}")
+        intx_list = []
+
     render_scene(
         str(receptor_pdbqt),
-        str(ligand_pdbqt),
-        result.best_pose_pdbqt,
-        output=str(scene_out),
+        str(scene_out),
+        scene='pocket',
+        center=center,
+        interactions=intx_list,
+        ligand_pdbqt=best_pose,
     )
 
     render_interactions_2d(
         receptor_file,
         str(ligand_pdbqt),
-        result.best_pose_pdbqt,
+        intx_list,
         str(diagram_out),
     )
 
@@ -337,7 +366,7 @@ def cmd_run(args):
     print("✅ Docking Workflow Complete!")
     print("="*50)
     print(f"  📂 Output directory: {outdir.absolute()}")
-    print(f"  🔬 Best energy:     {result.best_affinity:.2f} kcal/mol")
+    print(f"  🔬 Best energy:     {best_energy:.2f} kcal/mol")
     print(f"  🖼️  3D scene:        {scene_out}")
     print(f"  📊 2D diagram:      {diagram_out}")
 
@@ -367,6 +396,12 @@ def main():
     # status
     p_status = subparsers.add_parser('status', help='Check dependencies and environment')
     p_status.set_defaults(func=cmd_status)
+
+    # cache
+    p_cache = subparsers.add_parser('cache', help='Show or clear the structure cache')
+    p_cache.add_argument('--clear', action='store_true',
+                        help='Delete all cached structure files')
+    p_cache.set_defaults(func=cmd_cache)
 
     # fetch
     p_fetch = subparsers.add_parser('fetch', help='Fetch protein or ligand structures')
