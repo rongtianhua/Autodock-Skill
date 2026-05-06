@@ -14,6 +14,7 @@ Usage:
     python -m autodock detect-interactions rec.pdb lig.pdbqt poses.pdbqt
     python -m autodock render-2d rec.pdb lig.pdbqt intx.pkl output.png
     python -m autodock render-pymol rec.pdb lig.pdbqt output.png
+    python -m autodock render-ligplot rec.pdb lig.pdbqt -o output.png --pdf
     python -m autodock virtual-screen rec.pdbqt library.csv out.csv
     python -m autodock validate rec.pdbqt crystal_lig.pdbqt
 
@@ -51,6 +52,7 @@ from autodock import (
     render_pocket,
     render_interactions_pymol,
     render_ligand_2d,
+    render_ligplot_2d,
     composite_summary,
     autodock_logger,
     clear_cache,
@@ -227,10 +229,12 @@ def cmd_detect_interactions(args):
 
 def cmd_render_2d(args):
     """Render 2D interaction diagram"""
+    # Detect interactions first
+    intx_list, _ = detect_interactions_plip(args.receptor, args.ligand)
     render_interactions_2d(
         args.receptor,
         args.ligand,
-        args.poses,
+        intx_list,
         args.output,
     )
     print(f"✅ 2D diagram saved: {args.output}")
@@ -245,6 +249,28 @@ def cmd_render_pymol(args):
         output=args.output,
     )
     print(f"✅ 3D scene saved: {args.output}")
+
+
+def cmd_render_ligplot(args):
+    """Render 2D interaction diagram using LIGPLOT+ hybrid approach"""
+    # Detect interactions via PLIP first
+    intx_list, _ = detect_interactions_plip(args.receptor, args.ligand)
+    
+    output_pdf = args.output.replace('.png', '.pdf') if args.output.endswith('.png') else args.output + '.pdf'
+    
+    ok = render_ligplot_2d(
+        args.receptor,
+        args.ligand,
+        args.output,
+        output_pdf=output_pdf if args.pdf else None,
+        interactions=intx_list,
+    )
+    if ok:
+        print(f"✅ LIGPLOT 2D diagram saved: {args.output}")
+        if args.pdf:
+            print(f"✅ PDF output saved: {output_pdf}")
+    else:
+        print("⚠️  LIGPLOT rendering failed")
 
 
 def cmd_virtual_screen(args):
@@ -500,6 +526,14 @@ def main():
     p_screen.add_argument('--box-size', nargs=3, type=float, required=True,
                          metavar=('W', 'H', 'D'), help='Search box dimensions')
     p_screen.set_defaults(func=cmd_virtual_screen)
+
+    # render-ligplot
+    p_ligplot = subparsers.add_parser('render-ligplot', help='Render 2D interaction diagram using LIGPLOT+ hybrid')
+    p_ligplot.add_argument('receptor', help='Receptor PDB')
+    p_ligplot.add_argument('ligand', help='Ligand PDBQT')
+    p_ligplot.add_argument('-o', '--output', default='ligplot_diagram.png', help='Output PNG file')
+    p_ligplot.add_argument('--pdf', action='store_true', help='Also generate PDF output')
+    p_ligplot.set_defaults(func=cmd_render_ligplot)
 
     # validate
     p_val = subparsers.add_parser('validate', help='Validate docking protocol via redocking')

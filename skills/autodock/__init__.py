@@ -69,6 +69,7 @@ from autodock._autodock import (
     detect_interactions,
     detect_interactions_plip,
     render_interactions_2d,
+    render_ligplot_2d,
     # Visualization (primary API)
     render_scene,
     # Specialized renderers
@@ -97,6 +98,9 @@ __all__ = [
     'detect_interactions',
     'detect_interactions_plip',
     'render_interactions_2d',
+    'render_ligplot_2d',
+    'render_ligplot_2d',
+    'render_ligplot_2d',
     # Visualization (primary)
     'render_scene',
     # Specialized renderers

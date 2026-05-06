@@ -197,8 +197,9 @@ def fetch_protein_alphafold(uniprot_id: str, output_path: str = None) -> str:
         urllib.request.urlretrieve(url, dest)
         with open(dest) as f:
             content = f.read()
-        if 'ATOM' not in content:
-            raise ValueError(f"AlphaFold structure not found: {uniprot_id}")
+        # Use regex to ensure at least one real ATOM record (not REMARK/HEADER/COMPND)
+        if not re.search(r'^ATOM ', content, re.MULTILINE):
+            raise ValueError(f"AlphaFold structure has no ATOM records: {uniprot_id}")
         print(f"[structure_fetch] AlphaFold downloaded: {dest}")
         return dest
     except urllib.error.HTTPError as e:
@@ -433,15 +434,49 @@ def fetch_molecule_pubchem(identifier: str,
         print(f"[structure_fetch] PubChem SDF cached: {cache_sdf} → {output_sdf}")
         return result
 
-    # Download SDF and populate cache
+    # Download SDF and populate cache.
+    # Fallback to RDKit ETKDGv3 if SDF is empty/truncated (complex molecules
+    # like nirmatrelvir often return incomplete SDF from PubChem PUG REST).
     sdf_url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}/SDF"
     import shutil as _shutil
     working_dir = os.path.dirname(output_sdf) or '.'
     os.makedirs(working_dir, exist_ok=True)
     urllib.request.urlretrieve(sdf_url, output_sdf)
-    _shutil.copy2(output_sdf, cache_sdf)
-    result['sdf_path'] = output_sdf
-    print(f"[structure_fetch] PubChem: {name} (CID: {cid}) → {output_sdf} (cached at {cache_sdf})")
+    # Validate SDF: must have V2000 header + at least one atom record
+    sdf_valid = False
+    try:
+        with open(output_sdf, 'rb') as f:
+            raw = f.read()
+        sdf_valid = b'V2000' in raw and len(raw) > 5000
+    except Exception:
+        sdf_valid = False
+
+    if sdf_valid:
+        _shutil.copy2(output_sdf, cache_sdf)
+        result['sdf_path'] = output_sdf
+        print(f"[structure_fetch] PubChem: {name} (CID: {cid}) → {output_sdf} (cached at {cache_sdf})")
+    else:
+        # SDF missing/truncated: generate 3D from SMILES using RDKit ETKDGv3
+        if _HAVE_RDKIT:
+            from rdkit import Chem
+            from rdkit.Chem import AllChem
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is not None:
+                mol = Chem.AddHs(mol, addCoords=True)
+                params_etkdg = AllChem.ETKDGv3()
+                params_etkdg.randomSeed = 42
+                AllChem.EmbedMolecule(mol, params_etkdg)
+                AllChem.MMFFOptimizeMolecule(mol)
+                writer = Chem.SDWriter(output_sdf)
+                writer.write(mol)
+                writer.close()
+                _shutil.copy2(output_sdf, cache_sdf)
+                result['sdf_path'] = output_sdf
+                print(f"[structure_fetch] PubChem SDF truncated; RDKit ETKDGv3 generated 3D: {output_sdf}")
+                return result
+        # RDKit not available: keep output_sdf as-is (degraded but usable)
+        result['sdf_path'] = output_sdf
+        print(f"[structure_fetch] PubChem: {name} (CID: {cid}) → {output_sdf} (SDF may be incomplete, SMILES OK)")
     return result
 
 
