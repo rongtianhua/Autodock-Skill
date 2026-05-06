@@ -4315,9 +4315,10 @@ def render_ligplot_2d(receptor_pdb: str,
             all_interactions.extend(_parse_ligplot_nnb(nnb_path, rdkit_2d, n_atoms))
 
         # ── Step 5: Render with PIL ───────────────────────────────
-        # Default canvas size (used below before draw_options access)
-        width = 900
-        height = 700
+        # High-resolution canvas: 8×6 inches at requested DPI (default 300)
+        # This ensures publication-quality output with enough pixel detail
+        width = int(dpi * 8)   # 8 inches wide
+        height = int(dpi * 6)  # 6 inches tall
 
         # Get molecular bounds
         xs = [conf.GetAtomPosition(i).x for i in range(n_atoms)]
@@ -4325,10 +4326,10 @@ def render_ligplot_2d(receptor_pdb: str,
         x_min, x_max = min(xs), max(xs)
         y_min, y_max = min(ys), max(ys)
 
-        # Scale to canvas
-        scale = min((width - 120) / (x_max - x_min + 1),
-                    (height - 120) / (y_max - y_min + 1)) if x_max > x_min else 50
-        padding = 60
+        # Scale to canvas (with margin for labels)
+        scale = min((width - 200) / (x_max - x_min + 1),
+                    (height - 200) / (y_max - y_min + 1)) if x_max > x_min else 50
+        padding = 100
 
         canvas_w = max(width, int((x_max - x_min) * scale) + 2 * padding)
         canvas_h = max(height, int((y_max - y_min) * scale) + 2 * padding)
@@ -4347,104 +4348,76 @@ def render_ligplot_2d(receptor_pdb: str,
                       'Cl': (10, 200, 10), 'Br': (160, 60, 0)}
         bg_color = (255, 255, 255)
 
-        # Draw aromatic rings as benzene-style: circle with alternating double bonds
-        rings = mol.GetRingInfo()
-        aromatic_atoms = set(a.GetIdx() for a in mol.GetAtoms() if a.GetIsAromatic())
+        # ── Kekulé aromatic bond detection ──
+        # Build set of bonds that should be drawn as double bonds (Kekulé)
+        ring_info = mol.GetRingInfo()
+        kekule_double_bonds = set()  # (min_idx, max_idx) tuples
         
-        # First: draw all non-aromatic bonds
+        for ring in ring_info.AtomRings():
+            if len(ring) == 6 and all(mol.GetAtomWithIdx(a).GetIsAromatic() for a in ring):
+                # 6-membered all-aromatic ring: Kekulé pattern (double at 0,2,4)
+                ring_bonds = []
+                for i in range(6):
+                    a1, a2 = ring[i], ring[(i + 1) % 6]
+                    bond = mol.GetBondBetweenAtoms(int(a1), int(a2))
+                    if bond:
+                        ring_bonds.append((min(int(a1), int(a2)), max(int(a1), int(a2))))
+                # Mark alternating bonds as double (0, 2, 4)
+                for idx in [0, 2, 4]:
+                    if idx < len(ring_bonds):
+                        kekule_double_bonds.add(ring_bonds[idx])
+
+        # ── Draw all bonds ──
+        # First pass: all non-aromatic + all aromatic single bonds
         for bond in mol.GetBonds():
-            if bond.GetIsAromatic():
-                continue
             i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
             p1 = conf.GetAtomPosition(i)
             p2 = conf.GetAtomPosition(j)
             x1, y1 = to_px(p1.x, p1.y)
             x2, y2 = to_px(p2.x, p2.y)
-            bond_type = bond.GetBondType()
             w = max(1, int(scale * 0.06))
             color = (80, 80, 80)
-            if bond_type == Chem.BondType.DOUBLE or bond_type == Chem.BondType.TRIPLE:
-                draw.line([(x1, y1), (x2, y2)], fill=color, width=w)
-                dx, dy = x2 - x1, y2 - y1
-                length = (dx**2 + dy**2) ** 0.5
-                if length > 0:
-                    ox, oy = -dy / length * 2, dx / length * 2
-                    draw.line([(x1 + ox, y1 + oy), (x2 + ox, y2 + oy)], fill=color, width=w)
-            else:
-                draw.line([(x1, y1), (x2, y2)], fill=color, width=w)
-        
-        # Second: draw aromatic bonds as single lines (circles will be added per ring)
-        for bond in mol.GetBonds():
-            if not bond.GetIsAromatic():
-                continue
-            i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
-            p1 = conf.GetAtomPosition(i)
-            p2 = conf.GetAtomPosition(j)
-            x1, y1 = to_px(p1.x, p1.y)
-            x2, y2 = to_px(p2.x, p2.y)
-            w = max(1, int(scale * 0.06))
-            draw.line([(x1, y1), (x2, y2)], fill=(80, 80, 80), width=w)
-        
-        # Third: draw benzene circles for 6-membered aromatic rings
-        # Build aromatic bond graph and find 6-membered cycles
-        arom_adj = {}
-        for bond in mol.GetBonds():
+            
             if bond.GetIsAromatic():
-                i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
-                arom_adj.setdefault(i, []).append(j)
-                arom_adj.setdefault(j, []).append(i)
-        
-        # Find 6-membered cycles in aromatic graph
-        found_cycles = set()
-        for start in arom_adj:
-            stack = [(start, [start])]
-            while stack:
-                curr, path = stack.pop()
-                for nb in arom_adj.get(curr, []):
-                    if nb in arom_adj:
-                        if nb == start and len(path) == 6:
-                            found_cycles.add(tuple(sorted(path)))
-                        elif nb not in path and len(path) < 6:
-                            stack.append((nb, path + [nb]))
-        
-        for r_atoms in found_cycles:
-            if len(r_atoms) != 6:
-                continue
-            
-            ring_pos = [to_px(conf.GetAtomPosition(a).x, conf.GetAtomPosition(a).y) for a in r_atoms]
-            
-            cx = sum(p[0] for p in ring_pos) / 6
-            cy = sum(p[1] for p in ring_pos) / 6
-            radii = [((p[0]-cx)**2 + (p[1]-cy)**2) ** 0.5 for p in ring_pos]
-            r = sum(radii) / 6
-            
-            draw.ellipse([cx - r, cy - r, cx + r, cy + r],
-                        outline=(80, 80, 80), width=max(1, int(scale * 0.05)),
-                        fill=(245, 245, 245))
-            
-            # Alternating double bonds
-            for k in range(6):
-                if k % 2 == 0:
-                    continue
-                p1 = ring_pos[k]
-                p2 = ring_pos[(k + 1) % 6]
-                dx, dy = p2[0] - p1[0], p2[1] - p1[1]
-                length = (dx**2 + dy**2) ** 0.5
-                if length > 4:
-                    perp_dx = -dy / length * 2.5
-                    perp_dy = dx / length * 2.5
-                    mx = (p1[0] + p2[0]) / 2
-                    my = (p1[1] + p2[1]) / 2
-                    shrink = 4
-                    bx1 = mx - (dx / length) * shrink + perp_dx
-                    by1 = my - (dy / length) * shrink + perp_dy
-                    bx2 = mx + (dx / length) * shrink + perp_dx
-                    by2 = my + (dy / length) * shrink + perp_dy
-                    draw.line([(bx1, by1), (bx2, by2)],
-                             fill=(80, 80, 80), width=max(1, int(scale * 0.04)))
+                # Check if this is a Kekulé double bond
+                key = (min(i, j), max(i, j))
+                if key in kekule_double_bonds:
+                    # Kekulé double bond: draw two CLEARLY SEPARATED parallel lines
+                    dx, dy = x2 - x1, y2 - y1
+                    length = (dx**2 + dy**2) ** 0.5
+                    if length > 0:
+                        # Larger offset for clear double bond visibility (4px)
+                        ox = -dy / length * 4.0
+                        oy = dx / length * 4.0
+                        draw.line([(x1 + ox, y1 + oy), (x2 + ox, y2 + oy)], fill=color, width=max(1, w))
+                        draw.line([(x1 - ox, y1 - oy), (x2 - ox, y2 - oy)], fill=color, width=max(1, w))
+                    else:
+                        draw.line([(x1, y1), (x2, y2)], fill=color, width=w)
+                else:
+                    # Kekulé single bond
+                    draw.line([(x1, y1), (x2, y2)], fill=color, width=w)
+            else:
+                # Non-aromatic bond
+                bond_type = bond.GetBondType()
+                if bond_type == Chem.BondType.DOUBLE or bond_type == Chem.BondType.TRIPLE:
+                    draw.line([(x1, y1), (x2, y2)], fill=color, width=w)
+                    dx, dy = x2 - x1, y2 - y1
+                    length = (dx**2 + dy**2) ** 0.5
+                    if length > 0:
+                        # Larger offset for clear double bond (4px)
+                        ox = -dy / length * 4.0
+                        oy = dx / length * 4.0
+                        draw.line([(x1 + ox, y1 + oy), (x2 + ox, y2 + oy)], fill=color, width=max(1, w))
+                        draw.line([(x1 - ox, y1 - oy), (x2 - ox, y2 - oy)], fill=color, width=max(1, w))
+                    else:
+                        draw.line([(x1, y1), (x2, y2)], fill=color, width=w)
+                else:
+                    draw.line([(x1, y1), (x2, y2)], fill=color, width=w)
 
         # Draw atoms
-        atom_radius = max(6, int(scale * 0.22))
+        # Scale atom radius proportionally to DPI for crisp rendering
+        atom_radius = max(10, int(scale * 0.25))
+        font_size = max(12, int(scale * 0.35))
         for i in range(n_atoms):
             atom = mol.GetAtomWithIdx(i)
             elem = atom.GetSymbol()
@@ -4455,12 +4428,11 @@ def render_ligplot_2d(receptor_pdb: str,
             # Circle fill
             draw.ellipse([x - atom_radius, y - atom_radius,
                           x + atom_radius, y + atom_radius],
-                         fill=color, outline=(0, 0, 0), width=1)
+                         fill=color, outline=(0, 0, 0), width=2)
 
             # Label
             try:
-                font = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc',
-                                           max(8, int(scale * 0.28)))
+                font = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', font_size)
             except:
                 font = ImageFont.load_default()
             label = elem
@@ -4486,7 +4458,7 @@ def render_ligplot_2d(receptor_pdb: str,
 
                 if p1 is not None:
                     x1, y1 = to_px(*p1)
-                    _draw_dashed_line(draw, (x1, y1), (x2, y2), fill=color, width=max(1, int(scale*0.04)))
+                    _draw_dashed_line(draw, (x1, y1), (x2, y2), fill=color, width=max(2, int(scale*0.05)))
                     mid_x, mid_y = (x1 + x2) // 2, (y1 + y2) // 2
                 else:
                     # PLIP-driven: draw arc from ligand atom outward
@@ -4497,7 +4469,7 @@ def render_ligplot_2d(receptor_pdb: str,
                     
                     n_group = interaction.get('_n_group', 1)
                     angle_offset = interaction.get('_angle_offset', 0)
-                    extend = 35
+                    extend = int(dpi * 0.35)  # ~0.35 inch extension
                     
                     if dist_main > 0:
                         base_angle = math.atan2(dy_main, dx_main)
@@ -4505,49 +4477,32 @@ def render_ligplot_2d(receptor_pdb: str,
                         
                         x_out = int(x2 + math.cos(rotated_angle) * extend)
                         y_out = int(y2 + math.sin(rotated_angle) * extend)
-                        x_start = int(x2 + math.cos(rotated_angle) * 5)
-                        y_start = int(y2 + math.sin(rotated_angle) * 5)
+                        x_start = int(x2 + math.cos(rotated_angle) * 18)
+                        y_start = int(y2 + math.sin(rotated_angle) * 18)
                         
-                        perp_angle = rotated_angle + math.pi / 2
-                        mid_x = int(x_out + math.cos(perp_angle) * 10)
-                        mid_y = int(y_out + math.sin(perp_angle) * 10)
+                        # mid = endpoint of dashed line (label position)
+                        mid_x, mid_y = x_out, y_out
                     else:
                         x_out, y_out = x2 + extend, y2
-                        x_start, y_start = x2, y2
-                        mid_x, mid_y = x_out + 10, y_out
+                        x_start, y_start = x2 + 18, y2
+                        mid_x, mid_y = x_out, y_out
                     
                     _draw_dashed_line(draw, (x_start, y_start), (x_out, y_out),
-                                     fill=color, width=max(1, int(scale*0.05)))
+                                     fill=color, width=max(2, int(scale*0.06)))
 
-                # Draw residue label close to arc endpoint (clamped to canvas)
+                # Draw residue label at dashed line endpoint (aligned with line end)
                 if res_label:
                     try:
-                        label_font = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', 9)
+                        label_font = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', 
+                                                         max(14, int(scale * 0.4)))
                     except:
                         label_font = ImageFont.load_default()
-                    # For PLIP-driven arcs: use perpendicular offset for label
-                    # Alternate sides based on rank to reduce overlap for shared atoms
-                    if p1 is None and p2 is not None:
-                        import math
-                        dx = mid_x - canvas_w // 2
-                        dy = mid_y - canvas_h // 2
-                        dist = (dx**2 + dy**2) ** 0.5
-                        if dist > 0:
-                            perp_dx = -dy / dist
-                            perp_dy = dx / dist
-                            # Alternate label side based on rank in group
-                            n_group = interaction.get('_n_group', 1)
-                            rank = interaction.get('_rank', 0)
-                            side = 1 if (rank % 2 == 0) else -1
-                            lx = int(mid_x + perp_dx * 12 * side + 4)
-                            ly = int(mid_y + perp_dy * 12 * side - 4)
-                        else:
-                            lx, ly = mid_x + 4, mid_y - 4
-                    else:
-                        lx, ly = mid_x + 4, mid_y - 4
+                    # Label directly at endpoint, small offset to avoid overlap
+                    lx = int(mid_x + 8)
+                    ly = int(mid_y - 10)
                     # Clamp label to canvas (with margin)
-                    lx = max(4, min(canvas_w - 60, lx))
-                    ly = max(4, min(canvas_h - 15, ly))
+                    lx = max(10, min(canvas_w - 100, lx))
+                    ly = max(10, min(canvas_h - 20, ly))
                     draw.text((lx, ly), res_label, fill=color, font=label_font)
 
         os.makedirs(os.path.dirname(output_png) or '.', exist_ok=True)
@@ -4703,13 +4658,13 @@ def _parse_ligplot_nnb(nnb_path: str, rdkit_2d: dict, n_lig_atoms: int) -> list:
 
 
 def _draw_dashed_line(draw, start, end, fill, width):
-    """Draw a dashed line using PIL."""
+    """Draw a dashed line using PIL with longer visible segments."""
     dx, dy = end[0] - start[0], end[1] - start[1]
     length = (dx**2 + dy**2) ** 0.5
     if length == 0:
         return
-    dash_len = 4
-    gap_len = 3
+    dash_len = 10   # much longer visible dash
+    gap_len = 5     # shorter gap
     n_dashes = int(length / (dash_len + gap_len))
     for i in range(n_dashes):
         t1 = i * (dash_len + gap_len) / length
