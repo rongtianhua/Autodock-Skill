@@ -4314,11 +4314,10 @@ def render_ligplot_2d(receptor_pdb: str,
             all_interactions.extend(_parse_ligplot_hhb(hhb_path, rdkit_2d, n_atoms))
             all_interactions.extend(_parse_ligplot_nnb(nnb_path, rdkit_2d, n_atoms))
 
-        # ── Step 5: Render with PIL ───────────────────────────────
+        # ── Step 5: Render with PIL (LigPlot+ v4.0 publication-quality) ──
         # High-resolution canvas: 8×6 inches at requested DPI (default 300)
-        # This ensures publication-quality output with enough pixel detail
-        width = int(dpi * 8)   # 8 inches wide
-        height = int(dpi * 6)  # 6 inches tall
+        width = int(dpi * 8)
+        height = int(dpi * 6)
 
         # Get molecular bounds
         xs = [conf.GetAtomPosition(i).x for i in range(n_atoms)]
@@ -4326,10 +4325,10 @@ def render_ligplot_2d(receptor_pdb: str,
         x_min, x_max = min(xs), max(xs)
         y_min, y_max = min(ys), max(ys)
 
-        # Scale to canvas (with margin for labels)
-        scale = min((width - 200) / (x_max - x_min + 1),
-                    (height - 200) / (y_max - y_min + 1)) if x_max > x_min else 50
-        padding = 100
+        # Scale to canvas (with margin for labels — 0.8" extend + label + safety)
+        scale = min((width - 600) / (x_max - x_min + 1),
+                    (height - 600) / (y_max - y_min + 1)) if x_max > x_min else 50
+        padding = 350
 
         canvas_w = max(width, int((x_max - x_min) * scale) + 2 * padding)
         canvas_h = max(height, int((y_max - y_min) * scale) + 2 * padding)
@@ -4339,85 +4338,83 @@ def render_ligplot_2d(receptor_pdb: str,
                     int((y - y_min) * scale + padding))
 
         # Draw base: white background
-        img = Image.new('RGB', (canvas_w, canvas_h), (255, 255, 255))
+        img = Image.new('RGB', (canvas_w, canvas_h), (255, 255, 179))  # CREAM background
         draw = ImageDraw.Draw(img)
 
         # Element → color
-        elem_color = {'C': (60, 60, 60), 'O': (230, 10, 10), 'N': (20, 20, 200),
-                      'S': (200, 160, 30), 'P': (250, 130, 0), 'F': (130, 130, 0),
-                      'Cl': (10, 200, 10), 'Br': (160, 60, 0)}
+        # LigPlot+ v4.0 official colours
+        elem_color = {
+            'C': (0, 0, 0),      # BLACK  — Carbon
+            'O': (255, 0, 0),        # RED    — Oxygen
+            'N': (0, 0, 255),       # BLUE   — Nitrogen
+            'S': (255, 255, 0),     # YELLOW — Sulphur
+            'P': (128, 0, 255),     # PURPLE — Phosphorus
+            'F': (128, 255, 0),       # LIME GREEN — Fluorine (other)
+            'Cl': (128, 255, 0),      # LIME GREEN — Chlorine (other)
+            'Br': (128, 255, 0),      # LIME GREEN — Bromine (other)
+            'I': (128, 255, 0),       # LIME GREEN — Iodine (other)
+        }
         bg_color = (255, 255, 255)
 
         # ── Kekulé aromatic bond detection ──
-        # Build set of bonds that should be drawn as double bonds (Kekulé)
         ring_info = mol.GetRingInfo()
-        kekule_double_bonds = set()  # (min_idx, max_idx) tuples
-        
+        kekule_double_bonds = set()
         for ring in ring_info.AtomRings():
             if len(ring) == 6 and all(mol.GetAtomWithIdx(a).GetIsAromatic() for a in ring):
-                # 6-membered all-aromatic ring: Kekulé pattern (double at 0,2,4)
                 ring_bonds = []
                 for i in range(6):
                     a1, a2 = ring[i], ring[(i + 1) % 6]
                     bond = mol.GetBondBetweenAtoms(int(a1), int(a2))
                     if bond:
                         ring_bonds.append((min(int(a1), int(a2)), max(int(a1), int(a2))))
-                # Mark alternating bonds as double (0, 2, 4)
                 for idx in [0, 2, 4]:
                     if idx < len(ring_bonds):
                         kekule_double_bonds.add(ring_bonds[idx])
 
         # ── Draw all bonds ──
-        # First pass: all non-aromatic + all aromatic single bonds
         for bond in mol.GetBonds():
             i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
             p1 = conf.GetAtomPosition(i)
             p2 = conf.GetAtomPosition(j)
             x1, y1 = to_px(p1.x, p1.y)
             x2, y2 = to_px(p2.x, p2.y)
-            w = max(1, int(scale * 0.06))
-            color = (80, 80, 80)
+            w = max(1, int(scale * 0.04))  # LigPlot+ 0.19 Å (ligand bonds)
+            color = (0, 0, 0)  # LigPlot+ ligand bonds: BLACK (closest to PURPLE for C-based)
             
             if bond.GetIsAromatic():
-                # Check if this is a Kekulé double bond
                 key = (min(i, j), max(i, j))
                 if key in kekule_double_bonds:
-                    # Kekulé double bond: draw two CLEARLY SEPARATED parallel lines
                     dx, dy = x2 - x1, y2 - y1
                     length = (dx**2 + dy**2) ** 0.5
                     if length > 0:
-                        # Larger offset for clear double bond visibility (4px)
-                        ox = -dy / length * 4.0
-                        oy = dx / length * 4.0
-                        draw.line([(x1 + ox, y1 + oy), (x2 + ox, y2 + oy)], fill=color, width=max(1, w))
-                        draw.line([(x1 - ox, y1 - oy), (x2 - ox, y2 - oy)], fill=color, width=max(1, w))
+                        offset = max(6.0, length * 0.03)
+                        ox = -dy / length * offset
+                        oy = dx / length * offset
+                        draw.line([(x1 + ox, y1 + oy), (x2 + ox, y2 + oy)], fill=color, width=max(2, w))
+                        draw.line([(x1 - ox, y1 - oy), (x2 - ox, y2 - oy)], fill=color, width=max(2, w))
                     else:
-                        draw.line([(x1, y1), (x2, y2)], fill=color, width=w)
+                        draw.line([(x1, y1), (x2, y2)], fill=color, width=max(2, w))
                 else:
-                    # Kekulé single bond
-                    draw.line([(x1, y1), (x2, y2)], fill=color, width=w)
+                    draw.line([(x1, y1), (x2, y2)], fill=color, width=max(2, w))
             else:
-                # Non-aromatic bond
                 bond_type = bond.GetBondType()
                 if bond_type == Chem.BondType.DOUBLE or bond_type == Chem.BondType.TRIPLE:
-                    draw.line([(x1, y1), (x2, y2)], fill=color, width=w)
+                    draw.line([(x1, y1), (x2, y2)], fill=color, width=max(2, w))
                     dx, dy = x2 - x1, y2 - y1
                     length = (dx**2 + dy**2) ** 0.5
                     if length > 0:
-                        # Larger offset for clear double bond (4px)
-                        ox = -dy / length * 4.0
-                        oy = dx / length * 4.0
-                        draw.line([(x1 + ox, y1 + oy), (x2 + ox, y2 + oy)], fill=color, width=max(1, w))
-                        draw.line([(x1 - ox, y1 - oy), (x2 - ox, y2 - oy)], fill=color, width=max(1, w))
+                        offset = max(6.0, length * 0.03)
+                        ox = -dy / length * offset
+                        oy = dx / length * offset
+                        draw.line([(x1 + ox, y1 + oy), (x2 + ox, y2 + oy)], fill=color, width=max(2, w))
+                        draw.line([(x1 - ox, y1 - oy), (x2 - ox, y2 - oy)], fill=color, width=max(2, w))
                     else:
-                        draw.line([(x1, y1), (x2, y2)], fill=color, width=w)
+                        draw.line([(x1, y1), (x2, y2)], fill=color, width=max(2, w))
                 else:
-                    draw.line([(x1, y1), (x2, y2)], fill=color, width=w)
+                    draw.line([(x1, y1), (x2, y2)], fill=color, width=max(2, w))
 
-        # Draw atoms
-        # Scale atom radius proportionally to DPI for crisp rendering
-        atom_radius = max(10, int(scale * 0.25))
-        font_size = max(12, int(scale * 0.35))
+        # Draw atoms (with circles and labels)
+        atom_radius = max(8, int(scale * 0.22))  # LigPlot+ 0.33 Å (relative to bond length)
         for i in range(n_atoms):
             atom = mol.GetAtomWithIdx(i)
             elem = atom.GetSymbol()
@@ -4432,7 +4429,9 @@ def render_ligplot_2d(receptor_pdb: str,
 
             # Label
             try:
-                font = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', font_size)
+                # LigPlot+ TEXT SIZES: atom names = 0.31 Å
+                font = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc',
+                                           max(7, int(scale * 0.20)))
             except:
                 font = ImageFont.load_default()
             label = elem
@@ -4441,8 +4440,9 @@ def render_ligplot_2d(receptor_pdb: str,
             draw.text((x - tw // 2, y - th // 2), label, fill=bg_color, font=font)
 
         # Draw interaction arcs
-        arc_color_hbond = (0, 100, 200)
-        arc_color_hydro = (150, 100, 150)
+        # LigPlot+ COLOURS: H-bonds = OLIVE GREEN, Hydrophobic = BRICK RED
+        arc_color_hbond = (26, 128, 0)
+        arc_color_hydro = (204, 0, 0)
 
         for interaction in all_interactions:
             arc_type = interaction.get('type')
@@ -4458,7 +4458,7 @@ def render_ligplot_2d(receptor_pdb: str,
 
                 if p1 is not None:
                     x1, y1 = to_px(*p1)
-                    _draw_dashed_line(draw, (x1, y1), (x2, y2), fill=color, width=max(2, int(scale*0.05)))
+                    _draw_dashed_line(draw, (x1, y1), (x2, y2), fill=color, width=max(1, int(scale*0.025)))  # LigPlot+ non-bonded contact thickness
                     mid_x, mid_y = (x1 + x2) // 2, (y1 + y2) // 2
                 else:
                     # PLIP-driven: draw arc from ligand atom outward
@@ -4469,7 +4469,8 @@ def render_ligplot_2d(receptor_pdb: str,
                     
                     n_group = interaction.get('_n_group', 1)
                     angle_offset = interaction.get('_angle_offset', 0)
-                    extend = int(dpi * 0.35)  # ~0.35 inch extension
+                    extend = int(dpi * 0.8)  # Long extension
+                    start_gap = atom_radius + 20
                     
                     if dist_main > 0:
                         base_angle = math.atan2(dy_main, dx_main)
@@ -4477,33 +4478,88 @@ def render_ligplot_2d(receptor_pdb: str,
                         
                         x_out = int(x2 + math.cos(rotated_angle) * extend)
                         y_out = int(y2 + math.sin(rotated_angle) * extend)
-                        x_start = int(x2 + math.cos(rotated_angle) * 18)
-                        y_start = int(y2 + math.sin(rotated_angle) * 18)
+                        x_start = int(x2 + math.cos(rotated_angle) * start_gap)
+                        y_start = int(y2 + math.sin(rotated_angle) * start_gap)
                         
-                        # mid = endpoint of dashed line (label position)
                         mid_x, mid_y = x_out, y_out
                     else:
                         x_out, y_out = x2 + extend, y2
-                        x_start, y_start = x2 + 18, y2
+                        x_start, y_start = x2 + start_gap, y2
                         mid_x, mid_y = x_out, y_out
                     
                     _draw_dashed_line(draw, (x_start, y_start), (x_out, y_out),
-                                     fill=color, width=max(2, int(scale*0.06)))
+                                     fill=color, width=max(1, int(scale*0.025)))  # LigPlot+ H-bond thickness: 0.07 Å
 
-                # Draw residue label at dashed line endpoint (aligned with line end)
-                if res_label:
-                    try:
-                        label_font = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', 
-                                                         max(14, int(scale * 0.4)))
-                    except:
-                        label_font = ImageFont.load_default()
-                    # Label directly at endpoint, small offset to avoid overlap
-                    lx = int(mid_x + 8)
-                    ly = int(mid_y - 10)
-                    # Clamp label to canvas (with margin)
-                    lx = max(10, min(canvas_w - 100, lx))
-                    ly = max(10, min(canvas_h - 20, ly))
-                    draw.text((lx, ly), res_label, fill=color, font=label_font)
+        # ── Label rendering: energy minimization (LigPlot+ style) ──
+        # Prepare label data with dimensions
+        label_data = []
+        try:
+            label_font = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc',
+                                             max(14, int(scale * 0.4)))
+        except:
+            label_font = ImageFont.load_default()
+        
+        for idx, interaction in enumerate(all_interactions):
+            arc_type = interaction.get('type')
+            color = arc_color_hbond if arc_type == 'hbond' else arc_color_hydro
+            p1 = interaction.get('p1')
+            p2 = interaction.get('p2')
+            res_label = interaction.get('res_label', '')
+            if not res_label or p2 is None:
+                continue
+            
+            x2, y2 = to_px(*p2)
+            if p1 is not None:
+                x1, y1 = to_px(*p1)
+                mid_x, mid_y = (x1 + x2) // 2, (y1 + y2) // 2
+            else:
+                dx_main = x2 - canvas_w // 2
+                dy_main = y2 - canvas_h // 2
+                dist_main = (dx_main**2 + dy_main**2) ** 0.5
+                angle_offset = interaction.get('_angle_offset', 0)
+                extend = int(dpi * 0.8)
+                if dist_main > 0:
+                    base_angle = math.atan2(dy_main, dx_main)
+                    rotated_angle = base_angle + angle_offset
+                    x_out = int(x2 + math.cos(rotated_angle) * extend)
+                    y_out = int(y2 + math.sin(rotated_angle) * extend)
+                else:
+                    x_out, y_out = x2 + extend, y2
+                mid_x, mid_y = x_out, y_out
+            
+            # Measure text size
+            bbox = draw.textbbox((0, 0), res_label, font=label_font)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            
+            label_data.append({
+                'text': res_label,
+                'color': color,
+                'desired_x': mid_x,
+                'desired_y': mid_y,
+                'width': tw,
+                'height': th,
+            })
+        
+        # Prepare atom data
+        atom_data = []
+        for i in range(n_atoms):
+            pos = conf.GetAtomPosition(i)
+            x, y = to_px(pos.x, pos.y)
+            atom_data.append({
+                'x': x,
+                'y': y,
+                'radius': atom_radius,
+            })
+        
+        # Run energy minimization
+        final_positions = _optimize_label_positions(
+            label_data, atom_data, canvas_w, canvas_h, n_iter=80
+        )
+        
+        # Draw labels at optimized positions
+        for idx, pos in final_positions.items():
+            lbl = label_data[idx]
+            draw.text(pos, lbl['text'], fill=lbl['color'], font=label_font)
 
         os.makedirs(os.path.dirname(output_png) or '.', exist_ok=True)
         img.save(output_png, dpi=(dpi, dpi))
@@ -4515,6 +4571,158 @@ def render_ligplot_2d(receptor_pdb: str,
 
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _optimize_label_positions(labels, atoms, canvas_w, canvas_h, n_iter=80):
+    """LigPlot+-style energy minimization for label placement.
+    
+    Simulates the minimization algorithm from ligplot.prm:
+      - Anchor spring: pulls label toward desired (virtual line endpoint)
+      - Label-label repulsion: soft-core, like atom-atom clash
+      - Label-atom repulsion: hard-core, like bond-atom clash
+      - Boundary penalty: keeps labels inside canvas
+    
+    Args:
+        labels: list of dicts with 'desired_x','desired_y','width','height','text','color'
+        atoms:  list of dicts with 'x','y','radius'
+        canvas_w, canvas_h: canvas dimensions
+        n_iter: number of minimization steps (default 80)
+    
+    Returns:
+        dict mapping label_index -> (x, y) final position
+    """
+    import math
+    
+    # Initialize at desired positions
+    positions = {}
+    for i, lbl in enumerate(labels):
+        positions[i] = [float(lbl['desired_x']), float(lbl['desired_y'])]
+    
+    # Pre-compute label dimensions
+    dims = {}
+    for i, lbl in enumerate(labels):
+        dims[i] = (lbl['width'], lbl['height'])
+    
+    # Minimization loop (gradient descent with decaying step size)
+    for step in range(n_iter):
+        # Decaying step size: starts at 2.0, ends at 0.1
+        step_size = 2.0 * (0.95 ** step)
+        
+        for i in range(len(labels)):
+            x, y = positions[i]
+            w, h = dims[i]
+            lbl = labels[i]
+            
+            # Compute gradient (force on this label)
+            gx, gy = 0.0, 0.0
+            
+            # ── Term 1: Anchor spring (keep near desired position) ──
+            # Matches ligplot.prm: Weight for anchor-position energy term = 20.0
+            k_anchor = 0.8
+            gx += k_anchor * (lbl['desired_x'] - x)
+            gy += k_anchor * (lbl['desired_y'] - y)
+            
+            # ── Term 2: Label-label repulsion (soft-core) ──
+            # Matches ligplot.prm: Atom-atom clash parameter = 10.00
+            k_label = 25.0
+            for j in range(len(labels)):
+                if j == i:
+                    continue
+                x2, y2 = positions[j]
+                w2, h2 = dims[j]
+                
+                # Compute overlap in x and y
+                # Box i: [x, x+w] × [y, y+h]
+                # Box j: [x2, x2+w2] × [y2, y2+h2]
+                overlap_x = min(x + w, x2 + w2) - max(x, x2)
+                overlap_y = min(y + h, y2 + h2) - max(y, y2)
+                
+                if overlap_x > 0 and overlap_y > 0:
+                    # OVERLAPPING: strong repulsion proportional to overlap
+                    # Push in the direction of smaller overlap (least resistance)
+                    if overlap_x < overlap_y:
+                        # Push horizontally
+                        cx = (x + w/2) - (x2 + w2/2)  # center-to-center
+                        gx += k_label * (1 if cx > 0 else -1) * max(10, abs(overlap_x) + 5)
+                    else:
+                        # Push vertically
+                        cy = (y + h/2) - (y2 + h2/2)
+                        gy += k_label * (1 if cy > 0 else -1) * max(10, abs(overlap_y) + 5)
+                else:
+                    # NOT overlapping but close: gentle repulsion
+                    # Minimum distance between box edges
+                    dist_x = max(0, max(x, x2) - min(x + w, x2 + w2))
+                    dist_y = max(0, max(y, y2) - min(y + h, y2 + h2))
+                    
+                    if dist_x < 30 and dist_y < 30:
+                        # Close proximity: add small repulsive force
+                        cx = (x + w/2) - (x2 + w2/2)
+                        cy = (y + h/2) - (y2 + h2/2)
+                        dist = math.sqrt(cx**2 + cy**2)
+                        if dist > 0 and dist < 80:
+                            force = k_label * 0.3 * (80 - dist) / dist
+                            gx += cx * force / dist
+                            gy += cy * force / dist
+            
+            # ── Term 3: Label-atom repulsion (hard-core) ──
+            # Matches ligplot.prm: Bond-atom clash parameter = 0.20
+            # (treat labels like bonds, atoms like atoms)
+            k_atom = 40.0
+            margin = 8  # pixels clearance
+            
+            for atom in atoms:
+                ax, ay = atom['x'], atom['y']
+                ar = atom['radius'] + margin
+                
+                # Label center
+                cx = x + w/2
+                cy = y + h/2
+                
+                # Distance from label center to atom center
+                dx_at = cx - ax
+                dy_at = cy - ay
+                dist = math.sqrt(dx_at**2 + dy_at**2)
+                
+                # Threshold: label should stay outside atom radius + label half-diagonal
+                threshold = ar + max(w, h) * 0.4
+                
+                if dist < threshold and dist > 0:
+                    # Too close: repel
+                    force = k_atom * (threshold - dist)
+                    gx += dx_at / dist * force
+                    gy += dy_at / dist * force
+                elif dist == 0:
+                    gx += k_atom * 50
+                    gy += k_atom * 50
+            
+            # ── Term 4: Boundary penalty ──
+            # Keep labels inside canvas with soft walls
+            margin = 5
+            if x < margin:
+                gx += 10.0
+            if x + w > canvas_w - margin:
+                gx -= 10.0
+            if y < margin:
+                gy += 10.0
+            if y + h > canvas_h - margin:
+                gy -= 10.0
+            
+            # ── Update position ──
+            positions[i][0] += gx * step_size
+            positions[i][1] += gy * step_size
+            
+            # Hard clamp to canvas
+            positions[i][0] = max(0, min(canvas_w - w, positions[i][0]))
+            positions[i][1] = max(0, min(canvas_h - h, positions[i][1]))
+    
+    # Return final positions as integers
+    return {i: (int(positions[i][0]), int(positions[i][1])) for i in positions}
+
+
+def _boxes_overlap(a, b, margin=0):
+    """Check if two bounding boxes overlap (with optional margin)."""
+    return not (a[2] + margin < b[0] or b[2] + margin < a[0] or
+                a[3] + margin < b[1] or b[3] + margin < a[1])
 
 
 def _parse_ligplot_hhb(hhb_path: str, rdkit_2d: dict, n_lig_atoms: int) -> list:
@@ -4658,13 +4866,13 @@ def _parse_ligplot_nnb(nnb_path: str, rdkit_2d: dict, n_lig_atoms: int) -> list:
 
 
 def _draw_dashed_line(draw, start, end, fill, width):
-    """Draw a dashed line using PIL with longer visible segments."""
+    """Draw a dashed line using PIL with long visible segments."""
     dx, dy = end[0] - start[0], end[1] - start[1]
     length = (dx**2 + dy**2) ** 0.5
     if length == 0:
         return
-    dash_len = 10   # much longer visible dash
-    gap_len = 5     # shorter gap
+    dash_len = 14   # long visible dash
+    gap_len = 6     # shorter gap
     n_dashes = int(length / (dash_len + gap_len))
     for i in range(n_dashes):
         t1 = i * (dash_len + gap_len) / length
