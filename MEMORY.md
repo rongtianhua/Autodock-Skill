@@ -24,6 +24,52 @@
 - **Docker运行时: OrbStack替代Colima** (2026-04-19): 用户解决V2RayN网络问题后安装OrbStack 2.0.5；Colima已删除；Docker完全切换到OrbStack
 - **conda环境结构** (2026-04-20): `scvi`(Python3.11/scvi-tools+scGPT+DrugReflector), `scgen`(Python3.9/scvi1.1.6+scgen), `geneformer`(Python3.10/geneformer完整包), `pwas`(Python3.9), `mdanalysis`(Python3.11), `autodock`(Python3.11)
 - **memos记忆写入规则** (2026-04-18): 用户说“记住XX”→写memory/YYYY-MM-DD.md；MEMORY.md只接受系统蒸馏结果+用户明确指令
+
+
+
+
+## Promoted Entries (2026-05-07)
+
+- 修复1：`_docking.py` 顶部添加导入：`from autodock._interactions import ..., render_interactions_2d; from autodock._rendering_3d import render_scene` (daily log, 2026-05-07)
+
+- 修复1：`_docking.py` 顶部添加导入：`from autodock._interactions import ..., render_interactions_2d; from autodock._rendering_3d import render_scene` (daily log, 2026-05-07)
+
+- 修复：在 `_core.py` 的 `DockingResult` 中添加三个字段 `png_2d: str | None = None; png_3d: str | None = None; output_dir: str | None = None` (daily log, 2026-05-07)
+
+- 修复：在 `_core.py` 的 `DockingResult` 中添加三个字段 `png_2d: str | None = None; png_3d: str | None = None; output_dir: str | None = None` (daily log, 2026-05-07)
+
+- 修复：重构 `prepare_receptor_with_waters` — 在 meeko 调用**之前**预过滤 skip_linkers={'02J','010','PJE','NFH','NFN'}，保留 HOH/WAT/H2O (daily log, 2026-05-07)
+
+
+## Promoted Entries (2026-05-07)
+
+- `_autodock.py`: 修复 `_parse_ligplot_hhb`/`_parse_ligplot_nnb`，移除 `use_ghostscript`，修复 LIGPLOT 配体识别 (daily log, 2026-05-06)
+
+- `_autodock.py`: 修复 `_parse_ligplot_hhb`/`_parse_ligplot_nnb`，移除 `use_ghostscript`，修复 LIGPLOT 配体识别 (daily log, 2026-05-06)
+
+- 根因：6LU7 含 02J/010/PJE linker 残基，`allow_bad_res=True` 对 bonded unknown residues（linker）无效 (daily log, 2026-05-07)
+
+- 根因：6LU7 含 02J/010/PJE linker 残基，`allow_bad_res=True` 对 bonded unknown residues（linker）无效 (daily log, 2026-05-07)
+
+- 为 π-π (pistacking) 新增独立分支：用 `item.proteinring.center` 设置 `prot_center`（protein ring centroid），存入 `_prot_center`，后续 nearest-atom fallback 不覆盖 (daily log, 2026-05-05)
+
+
+## Promoted Entries (2026-05-07)
+
+- 根因：`@dataclass(slots=True)` 的 `DockingResult` 没有 `__dict__`，`dr.png_2d = ...` 报错 (daily log, 2026-05-07)
+
+- 根因：`render_scene` 的第一个参数是 `pdb_path`，而 `dock_single` 用 `receptor_pdb=` (daily log, 2026-05-07)
+
+- 关键发现：`object.__setattr__` 对 `slots=True` dataclass 也无效（与普通 class 不同） (daily log, 2026-05-07)
+
+- **修复**: 改为先调用 `detect_interactions_plip()` 获取相互作用列表，再传递给渲染函数 (daily log, 2026-05-06)
+
+- **原因**: 直接传递 `args.poses`（字符串路径）给 `render_interactions_2d` 的 `interactions` 参数（应为列表） (daily log, 2026-05-06)
+## Promoted Entries (2026-05-07)
+
+- **openclaw-plugin-management** (skill, 2026-04-24)
+  OpenClaw 飞书插件管理与配置调整。当你想了解 OpenClaw 内置 feishu 插件和新收编的 openclaw-lark 官方插件的关系时；当需要安装、更新、卸载飞书官方插件时；当需要启用流式输出（streaming）或多任务并行（threadSession）功能时；当 openclaw-lark CLI 没有 uninstall 命令不知道如何卸载时——使用此技能。两套飞书插件并存
+
 ## Lessons Learned
 - **2026-04-20: R包安装大小写敏感** — SeqArray(大写S)、plink2R(大写R)等包名必须严格准确，不能猜；生物医学包名必须严谨
 - **2026-04-20: preprocessCore/impute需BiocManager** — CRAN无ARM64版本，需`BiocManager::install()`而非`install.packages()`

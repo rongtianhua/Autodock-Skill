@@ -23,7 +23,7 @@ Environment: conda activate autodock313
 from autodock._core import (
     autodock_logger,
     DockingResult, build_docking_result,
-    _HAVE_PYMOL, _HAVE_VINA, _HAVE_RDKIT, _HAVE_PLIP, _HAVE_MEEKO,
+    _HAVE_PYMOL, _HAVE_VINA, _HAVE_RDKIT, _HAVE_PLIP, _HAVE_MEEKO, _HAVE_OBABEL,
     _detect_receptor_source, _RECEPTOR_SOURCE_LABELS,
 )
 
@@ -33,6 +33,7 @@ from autodock._structure_fetch import (
     fetch_protein_alphafold, fetch_protein_swissmodel, fetch_protein_pdb_redo,
     fetch_molecule, fetch_molecule_pubchem,
     fetch_molecule_chembl, fetch_molecule_cactus, fetch_molecule_drugbank,
+    fetch_bindingdb_affinity, fetch_bindingdb_by_target,
     clear_cache, get_cache_info,
 )
 

@@ -32,8 +32,13 @@ conda activate autodock313
 python -m autodock status
 
 # 获取结构
-python -m autodock fetch pdb 6LU7
+python -m autodock fetch pdb 6LU7              # legacy .pdb
+python -m autodock fetch pdb 6LU7 --format cif  # .cif → 自动转 .pdb
 python -m autodock fetch ligand aspirin
+
+# BindingDB 实验亲和力查询
+python -m autodock bindingdb aspirin --type name --max-results 10
+python -m autodock bindingdb P00533 --type uniprot --max-results 50  # EGFR 靶点
 
 # 制备
 python -m autodock prepare-receptor protein.pdb protein.pdbqt
@@ -98,8 +103,22 @@ from autodock import (
 )
 
 # 1. 获取结构
-fetch_protein_pdb("6LU7")
+# 蛋白结构（支持 .pdb 和 .cif 格式）
+fetch_protein_pdb("6LU7")                    # 默认：legacy .pdb（4字符ID）
+fetch_protein_pdb("6LU7", format='cif')      # 强制下载 .cif → 自动转 .pdb
+fetch_protein_pdb("PDB_12345678", format='auto')  # 12字符扩展ID，自动用 .cif
+
+# 小分子（多数据源自动回退）
 mol = fetch_molecule_pubchem("nirmatrelvir")
+mol = fetch_molecule_chembl("CHEMBL4804922")   # ChEMBL 生物活性数据
+mol = fetch_molecule_cactus("aspirin")          # NIH Cactus 快速 SMILES 解析
+
+# 实验结合亲和力（BindingDB — 160万+ 实验数据）
+from autodock import fetch_bindingdb_affinity, fetch_bindingdb_by_target
+# 按化合物查亲和力
+aff_data = fetch_bindingdb_affinity(name="aspirin", max_results=10)
+# 按靶点查所有已知配体
+ligands = fetch_bindingdb_by_target(uniprot_id="P00533", max_results=50)  # EGFR
 
 # 或从 ZINC22 采样药物相似化合物（~130M 可购买化合物）
 df = sample_zinc_compounds(n=50, h_donors_range=(0, 3), logp_range=(2, 4), mw_range=(250, 400))
@@ -746,3 +765,77 @@ composite_summary(
 | CB-Dock2 paper (PMC9252749) | cavity 可视化流程，配体 gold + 口袋 bluewhite 配色 |
 | APBS Electrostatics Plugin docs | 静电势表面染色：±5 kT/e，红蓝配色方案 |
 | Wilson Lab PyMOL Cartoon Style | cartoon_ring_mode=3, cartoon_fancy_helices=1 |
+
+---
+
+## 附录 A：mmCIF (.cif) 格式支持
+
+### 背景
+- **PDB 格式已冻结**：wwPDB 不再更新 legacy PDB 格式
+- **mmCIF 是主格式**：新条目（12 字符 PDB ID）**只能通过 .cif 获取**
+- **OpenBabel 转换**：下载 .cif 后自动转换为 .pdb，下游工具零改动
+
+### 使用方式
+```python
+# 4 字符 legacy ID（默认 auto：先尝试 .cif，失败则回退 .pdb）
+fetch_protein_pdb("6LU7")
+fetch_protein_pdb("6LU7", format='cif')   # 强制 .cif → .pdb 转换
+
+# 12 字符扩展 ID（强制 .cif，需 OpenBabel）
+fetch_protein_pdb("PDB_12345678", format='auto')
+```
+
+### 依赖检测
+```bash
+python -m autodock status
+# → OpenBabel: ✅ OK
+```
+
+### 安装 OpenBabel
+```bash
+conda install -c conda-forge openbabel
+```
+
+---
+
+## 附录 B：BindingDB 实验亲和力集成
+
+### 背景
+- **BindingDB** 包含 160 万+ 实验测定的结合亲和力（Ki/Kd/IC50）
+- 覆盖 7,000+ 靶蛋白，270 万+ 化合物
+- 免费 REST API，无需注册
+
+### 使用方式
+```python
+from autodock import fetch_bindingdb_affinity, fetch_bindingdb_by_target
+
+# 按化合物查亲和力
+aff_data = fetch_bindingdb_affinity(
+    smiles="CC(=O)OC1=CC=CC=C1C(=O)O",  # aspirin SMILES
+    max_results=10
+)
+# Returns: [{'affinity_type': 'Ki', 'affinity_value': 150.0, 'affinity_unit': 'µM',
+#            'target_name': 'COX-1', 'target_uniprot': 'P23219', ...}, ...]
+
+# 按靶点查所有已知配体
+ligands = fetch_bindingdb_by_target(
+    uniprot_id="P00533",  # EGFR
+    max_results=50
+)
+# Returns: [{'smiles': '...', 'name': 'Gefitinib',
+#            'affinity_type': 'IC50', 'affinity_value': 0.033, ...}, ...]
+```
+
+### CLI 查询
+```bash
+# 按化合物名
+python -m autodock bindingdb aspirin --type name --max-results 10
+
+# 按 UniProt ID（EGFR）
+python -m autodock bindingdb P00533 --type uniprot --max-results 50
+```
+
+### 数据验证场景
+1. **虚拟筛选验证**：对接得分 vs 实验 Ki 相关性分析
+2. **新靶点评估**：BindingDB 中是否有已知配体
+3. **亲和力预测**：基于结构对接为无实验数据化合物预测活性

@@ -58,12 +58,12 @@ from autodock import (
     clear_cache,
     get_cache_info,
 )
+from autodock._core import _P2RANK_PRANK, _JAVA_HOME, _HAVE_OBABEL
 
 
 def cmd_status(args):
     """Check environment and dependencies"""
     from autodock._autodock import _HAVE_PYMOL, _HAVE_VINA, _HAVE_RDKIT, _HAVE_MEEKO
-    from autodock._core import _P2RANK_PRANK, _JAVA_HOME
 
     print("=" * 50)
     print("🧬 Autodock CLI Status")
@@ -72,6 +72,7 @@ def cmd_status(args):
     print(f"  Vina:       {'✅ OK' if _HAVE_VINA else '❌ MISSING'}")
     print(f"  RDKit:      {'✅ OK' if _HAVE_RDKIT else '❌ MISSING'}")
     print(f"  Meeko:      {'✅ OK' if _HAVE_MEEKO else '❌ MISSING'}")
+    print(f"  OpenBabel:  {'✅ OK' if _HAVE_OBABEL else '❌ MISSING'}")
     # P2Rank + Java detection
     import os
     p2rank_ok = os.path.exists(_P2RANK_PRANK) if '_P2RANK_PRANK' in locals() else False
@@ -412,6 +413,35 @@ def cmd_run(args):
     print(f"  📊 2D diagram:      {diagram_out}")
 
 
+def cmd_bindingdb(args):
+    """Query BindingDB for experimental binding affinities"""
+    from autodock._structure_fetch import fetch_bindingdb_affinity, fetch_bindingdb_by_target
+
+    if args.type == 'uniprot':
+        results = fetch_bindingdb_by_target(uniprot_id=args.query, max_results=args.max_results)
+    elif args.type == 'smiles':
+        results = fetch_bindingdb_affinity(smiles=args.query, max_results=args.max_results)
+    else:
+        results = fetch_bindingdb_affinity(name=args.query, max_results=args.max_results)
+
+    if not results:
+        print("⚠️  No BindingDB results found")
+        return
+
+    print(f"\n📊 BindingDB Results ({len(results)} records)")
+    print("=" * 70)
+    for i, r in enumerate(results, 1):
+        aff = r.get('affinity_value')
+        unit = r.get('affinity_unit', 'µM')
+        target = r.get('target_name') or r.get('name')
+        ref = r.get('reference') or 'N/A'
+        print(f"{i}. {r.get('affinity_type', 'N/A')}: {aff} {unit}")
+        if target:
+            print(f"   Target: {target}")
+        print(f"   Ref: {ref}")
+    print("=" * 70)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog='autodock',
@@ -561,6 +591,15 @@ def main():
     p_val.add_argument('receptor', help='Receptor PDBQT')
     p_val.add_argument('crystal_ligand', help='Crystal ligand PDBQT')
     p_val.set_defaults(func=cmd_validate)
+
+    # bindingdb
+    p_bind = subparsers.add_parser('bindingdb', help='Query BindingDB for experimental affinities')
+    p_bind.add_argument('query', help='SMILES, name, or UniProt ID')
+    p_bind.add_argument('--type', choices=['smiles', 'name', 'uniprot'], default='name',
+                       help='Query type (default: name)')
+    p_bind.add_argument('--max-results', type=int, default=10,
+                       help='Maximum results (default: 10)')
+    p_bind.set_defaults(func=cmd_bindingdb)
 
     # run (full workflow)
     p_run = subparsers.add_parser('run', help='Full workflow: fetch → prepare → dock → visualize')

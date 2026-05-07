@@ -46,7 +46,7 @@ WEIGHTS = {
 }
 
 # Thresholds
-MIN_SCORE = 0.60
+MIN_SCORE = 0.50
 MIN_RECALL_COUNT = 2
 MIN_UNIQUE_QUERIES = 1
 MAX_DAILY_PROMOTIONS = 5
@@ -71,6 +71,11 @@ def load_promoted() -> set:
 
 def append_promoted(entry_hash: str, title: str, source: str):
     ensure_dir(PROMOTED_INDEX)
+    # Skip if already promoted (dedup on write)
+    if PROMOTED_INDEX.exists():
+        existing = PROMOTED_INDEX.read_text()
+        if entry_hash in existing:
+            return
     with open(PROMOTED_INDEX, "a") as f:
         f.write(f"{entry_hash}|{source}|{ts_to_date(get_now_ts())}\n")
 
@@ -89,8 +94,10 @@ def get_memOS_candidates(conn: sqlite3.Connection) -> list[dict]:
         SELECT id, name, description, quality_score, source_type,
                tags, created_at, updated_at, visibility
         FROM skills
-        WHERE status = 'active' AND quality_score IS NOT NULL AND quality_score >= 0.5
-        ORDER BY quality_score DESC
+        WHERE status = 'active'
+          AND quality_score IS NOT NULL
+          AND quality_score >= 5.0
+          ORDER BY quality_score DESC
         LIMIT 50
     """).fetchall()
 
@@ -149,7 +156,7 @@ def get_daily_memory_candidates() -> list[dict]:
     """Scan recent daily memory logs for high-value entries."""
     candidates = []
     today = datetime.now()
-    cutoff = today - timedelta(days=7)
+    cutoff = today - timedelta(days=3)
 
     for log_file in sorted(MEMORY_DIR.glob("2026-*.md")):
         try:
@@ -161,14 +168,32 @@ def get_daily_memory_candidates() -> list[dict]:
 
         content = log_file.read_text()
         # Extract sections: ## Decisions, ## Lessons Learned, ## Projects
-        for section in ["Decisions Made", "Lessons Learned", "Projects", "Completed Tasks"]:
-            pattern = rf"## {section}.*?(?=\n## |\Z)"
-            match = re.search(pattern, content, re.DOTALL)
-            if not match:
+        # Extract ALL ## sections (not just named ones)
+        section_pattern = r"## (.+?)(?:\n|$)(.*?)(?=\n## |\Z)"
+        for m in re.finditer(section_pattern, content, re.DOTALL):
+            section_title = m.group(1).strip()
+            section_body = m.group(2).strip()
+            # Skip pure timestamps or very short headers
+            if len(section_title) < 3:
                 continue
-            text = match.group(0).strip()
             # Extract bullet points
-            bullets = re.findall(r"^- (.+)$", text, re.MULTILINE)
+            bullets = re.findall(r"^- (.+)$", section_body, re.MULTILINE)
+            for b in bullets:
+                b = b.strip()
+                if len(b) < 15:
+                    continue
+                entry_hash = hashlib.sha256(b.encode()).hexdigest()[:12]
+                candidates.append({
+                    "entry_hash": entry_hash,
+                    "type": "daily_log",
+                    "title": b[:80],
+                    "summary": b,
+                    "source_file": log_file.name,
+                    "section": section_title,
+                    "updated_at": int(log_file.stat().st_mtime * 1000),
+                })
+            # Also extract bold/key lines (lines starting with - or ** but not bullets)
+            # Already captured above via bullets
             for b in bullets:
                 b = b.strip()
                 if len(b) < 20:
@@ -190,13 +215,36 @@ def get_daily_memory_candidates() -> list[dict]:
 def compute_score(c: dict, all_entries: list[dict], now_ts: int) -> float:
     """Compute 6-signal weighted score."""
 
-    # Frequency (0.24): merge_count / recall evidence
+    # Frequency (0.20): merge_count / recall evidence
+    # For daily_log, use text length as a quality proxy (detailed = important)
     merge_count = c.get("merge_count", 0)
-    freq = min(merge_count / 10, 1.0)  # normalize to 0-1
+    if merge_count > 0:
+        freq = min(merge_count / 10, 1.0)
+    elif c.get("type") == "daily_log":
+        # Reward longer, more detailed bullets
+        summary = c.get("summary", c.get("title", ""))
+        freq = min(len(summary) / 200, 1.0)  # 200 chars = max freq
+    else:
+        freq = 0.0
 
     # Relevance (0.30): quality_score from MemOS (0-10 scale → 0-1)
+    # For daily_log entries without quality_score, reward content quality
     qs = c.get("quality_score", 0) or 0
-    relevance = min(qs / 10.0, 1.0)
+    if qs > 0:
+        relevance = min(qs / 10.0, 1.0)
+    else:
+        # daily_log: derive relevance from content quality signals
+        summary = c.get("summary", c.get("title", ""))
+        text_len = len(summary)
+        # Technical indicators: file paths, function names, error types, version numbers
+        tech_indicators = sum([
+            0.2 if any(p in summary for p in ["//", "~/", "/.", "`", "="]) else 0,  # paths/code
+            0.2 if any(kw in summary for kw in ["ERROR", "Fix", "Bug", "Crash", "Failed", "修复", "根因", "bug"]) else 0,
+            0.2 if any(s in summary for s in ["def ", "class ", "import ", "conda ", "docker ", "git "]) else 0,
+            0.2 if any(v in summary for v in ["v1.", "v2.", "v3.", "0.1", "1.0", "2024", "2025", "2026"]) else 0,  # versions
+            0.2 if text_len > 80 else (0.1 if text_len > 40 else 0),
+        ])
+        relevance = min(tech_indicators, 1.0)
 
     # Query diversity (0.15): distinct source files/sessions
     sources = set()
@@ -218,9 +266,29 @@ def compute_score(c: dict, all_entries: list[dict], now_ts: int) -> float:
         consolidation = 1.0
 
     # Conceptual richness (0.06): topic/tag density
+    # For daily_log, use section type and content detail as richness signal
     topic_len = len((c.get("topic") or "").split())
     tags_count = len(c.get("tags", []))
-    richness = min((topic_len + tags_count) / 10, 1.0)
+    if tags_count > 0 or topic_len > 0:
+        richness = min((topic_len + tags_count) / 10, 1.0)
+    elif c.get("type") == "daily_log":
+        # Reward certain section types as higher-value content
+        section = c.get("section", "").lower()
+        section_score = 0.0
+        if any(kw in section for kw in ["lesson", "learned", "决策", "decision"]):
+            section_score = 1.0
+        elif any(kw in section for kw in ["fix", "bug", "修复", "debug", "错误"]):
+            section_score = 0.9
+        elif any(kw in section for kw in ["project", "项目", "done", "完成"]):
+            section_score = 0.7
+        elif any(kw in section for kw in ["工具", "tool", "skill", "配置"]):
+            section_score = 0.7
+        # Bonus for technical content (file paths, commands)
+        summary = c.get("summary", "")
+        tech_bonus = 0.2 if any(p in summary for p in ["//", "~/", "/.", "conda ", "pip ", "python ", "git "]) else 0
+        richness = min(section_score + tech_bonus, 1.0)
+    else:
+        richness = 0.0
 
     score = (
         WEIGHTS["frequency"] * freq +
@@ -282,6 +350,7 @@ def format_dreams_draft(candidates: list[dict], scores: dict[str, float],
 
     for entry_hash, c, score in scored[:10]:
         marker = "✅" if entry_hash in promoted else "🆕"
+        c["_score"] = score  # attach for format functions
         if c["type"] == "skill":
             entry_text = format_skill_entry(c)
         elif c["type"] == "task":
@@ -299,15 +368,15 @@ def format_memory_promotion(c: dict) -> str:
     if c["type"] == "skill":
         return (
             f"\n- **{c['title']}** (skill, {ts})\n"
-            f"  {c.get('summary', '')[:200]}"
+            f"  {c.get('summary', '')[:200]}\n"
         )
     elif c["type"] == "task":
         return (
             f"\n- **{c['title']}** (task, {ts})\n"
-            f"  {c.get('summary', '')[:200]}"
+            f"  {c.get('summary', '')[:200]}\n"
         )
     else:
-        return f"\n- {c.get('summary', c.get('title', ''))} (daily log, {ts})"
+        return f"\n- {c.get('summary', c.get('title', ''))} (daily log, {ts})\n"
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
@@ -338,6 +407,16 @@ def main(apply: bool = False, limit: int = MAX_DAILY_PROMOTIONS,
     daily_cands = get_daily_memory_candidates()
     print(f"  Daily memory candidates: {len(daily_cands)}")
     candidates.extend(daily_cands)
+
+    # Deduplicate candidates by entry_hash (same content from same/diff files)
+    seen_hashes = set()
+    unique_candidates = []
+    for c in candidates:
+        if c["entry_hash"] not in seen_hashes:
+            seen_hashes.add(c["entry_hash"])
+            unique_candidates.append(c)
+    candidates = unique_candidates
+    print(f"  Deduplicated: {len(candidates)} unique candidates")
 
     # Score all
     scores = {c["entry_hash"]: compute_score(c, candidates, now_ts) for c in candidates}
@@ -385,6 +464,18 @@ def main(apply: bool = False, limit: int = MAX_DAILY_PROMOTIONS,
             new_entries.append(format_memory_promotion(c))
             append_promoted(c["entry_hash"], c.get("title", ""), c["type"])
 
+
+    # Clean duplicate lines from promoted.jsonl
+    if PROMOTED_INDEX.exists():
+        lines = PROMOTED_INDEX.read_text().strip().split("\n")
+        seen = set()
+        cleaned = []
+        for line in lines:
+            h = line.split("|")[0] if line else ""
+            if h and h not in seen:
+                seen.add(h)
+                cleaned.append(line)
+        PROMOTED_INDEX.write_text("\n".join(cleaned) + "\n")
         promoted_block = (
             f"\n\n## Promoted Entries ({datetime.now().strftime('%Y-%m-%d')})\n"
             + "".join(new_entries)

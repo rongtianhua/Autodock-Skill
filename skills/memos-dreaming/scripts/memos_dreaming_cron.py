@@ -14,4 +14,4 @@ import memos_dreaming as dreaming_module
 
 if __name__ == "__main__":
     # Always apply for cron runs — promote entries to MEMORY.md
-    dreaming_module.main(apply=True, limit=5, min_score=0.60, dry_run=False)
+    dreaming_module.main(apply=True, limit=5, min_score=0.50, dry_run=False)

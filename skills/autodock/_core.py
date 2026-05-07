@@ -378,6 +378,14 @@ except ImportError:
     _HAVE_MEEKO = False
     warnings.warn("meeko not available")
 
+# OpenBabel — for .cif → .pdb conversion (RCSB future format)
+try:
+    import subprocess
+    _obabel_test = subprocess.run(['obabel', '-V'], capture_output=True, timeout=5)
+    _HAVE_OBABEL = _obabel_test.returncode == 0
+except Exception:
+    _HAVE_OBABEL = False
+
 
 # ─── Safe color helper (PyMOL 3.x compatible) ──────────────────────────────────
 
