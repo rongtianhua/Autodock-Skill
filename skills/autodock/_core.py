@@ -46,12 +46,27 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 
 # Autodock logger — can be silenced via autodock_logger.setLevel(logging.WARNING)
+# File logging is enabled automatically if ~/.openclaw/logs/ exists.
 autodock_logger = logging.getLogger("autodock")
 autodock_logger.setLevel(logging.DEBUG)
 _handler = logging.StreamHandler()
 _handler.setLevel(logging.DEBUG)
 _handler.setFormatter(logging.Formatter("[autodock] %(message)s"))
 autodock_logger.addHandler(_handler)
+
+# Optional file logging
+_log_dir = os.path.expanduser("~/.openclaw/logs")
+if os.path.isdir(_log_dir):
+    _file_handler = logging.FileHandler(
+        os.path.join(_log_dir, "autodock.log"),
+        mode='a'  # append
+    )
+    _file_handler.setLevel(logging.DEBUG)
+    _file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    ))
+    autodock_logger.addHandler(_file_handler)
 
 # Backward compat: module-level logger for SKILL.md usage
 logger = autodock_logger
@@ -155,7 +170,7 @@ class DockingResult:
 
     # ── Clash detection ──────────────────────────────────────────────────
     clash_score: float | None = None    # Å overlap (DynamicBind/PoseBusters)
-    clash_acceptable: bool | None = None  # True if clash_score <= 0.5
+    clash_acceptable: bool | None = None  # True if clash_score <= 1.2 (explicit-H threshold)
 
     # ── Binding pocket ───────────────────────────────────────────────────
     binding_pocket: dict | None = None  # {pocket_num, center, box_size, druggability, p2rank_prob}

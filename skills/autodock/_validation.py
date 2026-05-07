@@ -234,24 +234,30 @@ def validate_docking_protocol(receptor_pdbqt: str,
 
 def compute_clash_score(docked_pdbqt: str,
                          receptor_pdb: str,
-                         clash_threshold: float = 0.5) -> dict:
+                         clash_threshold: float = 1.2) -> dict:
     """
     Detect steric clashes between a docked ligand pose and the protein.
 
     Clash score = max(overlap) across all protein-ligand atom pairs,
     where overlap = vdw_radii_sum - distance (positive = clash).
     Reported in: DynamicBind (Nature 2024), PoseBusters benchmark.
-    A clash score < 1.0 Å is generally acceptable for explicit-H systems
-    (PoseBusters benchmark uses 0.5 Å for heavy-atom-only comparisons).
+
+    Important threshold distinction:
+      - explicit-H systems (this skill, removeHs=False): threshold = 1.2 Å
+        H atoms participate in VDW calculations; H-H contacts naturally
+        yield larger overlaps. A clash score < 1.2 Å is acceptable.
+      - heavy-atom-only systems (PoseBusters default): threshold = 0.5 Å
+        No H atoms; stricter geometric constraints apply.
 
     Args:
         docked_pdbqt:  Docked ligand PDBQT string or file path
         receptor_pdb:  Protein PDB file (not PDBQT)
-        clash_threshold: Warning threshold in Å overlap (default 0.5)
+        clash_threshold: Warning threshold in Å overlap (default 1.2 for
+                         explicit-H systems; use 0.5 for heavy-atom-only)
 
     Returns:
         dict with:
-          clash_score (float):   max overlap in Å (clash > 0.5 is problematic)
+          clash_score (float):   max overlap in Å
           mean_overlap (float):  mean of all positive overlaps
           n_clashing_pairs (int): number of atom pairs with overlap > 0
           is_acceptable (bool):   True if clash_score <= clash_threshold

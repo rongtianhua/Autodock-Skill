@@ -63,6 +63,7 @@ from autodock import (
 def cmd_status(args):
     """Check environment and dependencies"""
     from autodock._autodock import _HAVE_PYMOL, _HAVE_VINA, _HAVE_RDKIT, _HAVE_MEEKO
+    from autodock._core import _P2RANK_PRANK, _JAVA_HOME
 
     print("=" * 50)
     print("🧬 Autodock CLI Status")
@@ -71,12 +72,26 @@ def cmd_status(args):
     print(f"  Vina:       {'✅ OK' if _HAVE_VINA else '❌ MISSING'}")
     print(f"  RDKit:      {'✅ OK' if _HAVE_RDKIT else '❌ MISSING'}")
     print(f"  Meeko:      {'✅ OK' if _HAVE_MEEKO else '❌ MISSING'}")
+    # P2Rank + Java detection
+    import os
+    p2rank_ok = os.path.exists(_P2RANK_PRANK) if '_P2RANK_PRANK' in locals() else False
+    java_ok = os.path.exists(f"{_JAVA_HOME}/bin/java") if '_JAVA_HOME' in locals() else False
+    print(f"  Java:       {'✅ OK' if java_ok else '❌ MISSING'} ({_JAVA_HOME if java_ok else 'not found'})")
+    print(f"  P2Rank:     {'✅ OK' if p2rank_ok else '❌ MISSING'} ({_P2RANK_PRANK if p2rank_ok else 'not found'})")
     print("=" * 50)
 
-    if all([_HAVE_PYMOL, _HAVE_VINA, _HAVE_RDKIT, _HAVE_MEEKO]):
-        print("✅ All dependencies available — ready for docking!")
+    core_ok = all([_HAVE_PYMOL, _HAVE_VINA, _HAVE_RDKIT, _HAVE_MEEKO])
+    if core_ok:
+        print("✅ Core dependencies available — ready for docking!")
     else:
-        print("⚠️  Some dependencies missing — run: conda activate autodock313")
+        print("⚠️  Some core dependencies missing — run: conda activate autodock313")
+
+    if p2rank_ok and java_ok:
+        print("✅ P2Rank rescoring available — pocket probability calibration enabled")
+    else:
+        print("⚠️  P2Rank not available — pocket detection falls back to fpocket only")
+
+    if not core_ok:
         sys.exit(1)
 
 
@@ -414,7 +429,13 @@ def main():
     parser.add_argument(
         '-v', '--verbose',
         action='store_true',
-        help='Enable debug logging',
+        help='Enable debug logging to stderr',
+    )
+    parser.add_argument(
+        '--log-file',
+        type=str,
+        default=None,
+        help='Write debug logs to file (in addition to stderr)',
     )
 
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
@@ -557,6 +578,18 @@ def main():
         autodock_logger.setLevel(logging.DEBUG)
     else:
         autodock_logger.setLevel(logging.INFO)
+
+    # Optional file logging
+    if args.log_file:
+        import logging
+        fh = logging.FileHandler(args.log_file, mode='a')
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"
+        ))
+        autodock_logger.addHandler(fh)
+        autodock_logger.info(f"[autodock] Logging to file: {args.log_file}")
 
     # Check subcommand
     if args.command is None:

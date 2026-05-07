@@ -418,7 +418,8 @@ def dock_ligand(receptor_pdbqt: str,
         include_interactions: If True, detect H-bond / π-π / hydrophobic contacts
                               for the best pose using RDKit geometry (requires receptor_pdb)
         include_clash: If True, compute clash score for the best pose
-                       (requires receptor_pdb; clash_score < 0.5 Å is publication-standard)
+                       (requires receptor_pdb; clash_score < 1.2 Å for explicit-H systems,
+                        < 0.5 Å for heavy-atom-only — PoseBusters standard)
         output_dir: If provided, save docking poses to this directory:
                     - docking_best.pdbqt   ← best pose (Vina-ranked #1)
                     - docking_all_poses.pdbqt ← all n_poses
@@ -1402,7 +1403,7 @@ def dock_single(receptor_pdb: str,
         clash_acceptable=metadata.get('clash', {}).get('is_acceptable'),
         best_pose_pdbqt=best_pose_path,
     )
-    # Use object.__setattr__ to set attributes on a slots=True dataclass
+    # Set output paths (fields already defined in DockingResult dataclass)
     dr.png_2d = png_2d
     dr.png_3d = png_3d
     dr.output_dir = output_dir
@@ -1439,7 +1440,7 @@ def screen_ligands(receptor_pdb: str,
         min_affinity:   Filter: only keep results with affinity <= this (kcal/mol).
                         Example: -8.0 keeps only "good" binders.
         max_clash:      Filter: only keep results with clash_score <= this (Å).
-                        Example: 0.5 keeps only clash-free poses.
+                        Example: 1.2 for explicit-H systems (0.5 for heavy-atom-only).
 
     Returns:
         (results_df, docking_results, summary_png)
