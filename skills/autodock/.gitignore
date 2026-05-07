@@ -1,0 +1,16 @@
+# Autodock skill gitignore
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.bak*
+*.bak
+*~
+.DS_Store
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/

@@ -1,6 +1,6 @@
 """
 Autodock Molecular Docking Skill
-================================
+==================================
 Complete molecular docking workflow: structure retrieval → preparation → docking → visualization.
 
 Usage:
@@ -10,132 +10,137 @@ Usage:
         fetch_protein_pdb, fetch_molecule_pubchem,
         prepare_receptor, prepare_ligand,
         find_binding_site, dock_ligand,
-        detect_interactions, render_scene,
-        render_complex, render_pocket, render_interactions_pymol,
+        detect_interactions, detect_interactions_plip,
+        render_scene, render_complex, render_pocket,
+        render_interactions_pymol, render_interactions_2d,
         composite_summary,
     )
 
 Environment: conda activate autodock313
 """
 
-# Import _pymol_viz_config FIRST to break circular dependency
-# (_autodock.py does: from autodock._pymol_viz_config import ...)
-from autodock._pymol_viz_config import (
-    SCENE_PRESETS,
-    get_scene_preset,
-    DASH_PRESETS,
-    DASH_COLOR_MAP,
-    STICK_PRESETS,
-    CARTOON_PUBLICATION,
-    CARTOON_POCKET,
-    CARTOON_INTERACTION,
-    PUBLICATION,
-    PUBLICATION_OUTLINE,
-    STANDARD,
-)
-
-from autodock._structure_fetch import (
-    fetch_protein,
-    fetch_protein_pdb,
-    fetch_protein_alphafold,
-    fetch_protein_swissmodel,
-    fetch_protein_pdb_redo,
-    fetch_molecule,
-    fetch_molecule_pubchem,
-    fetch_molecule_chembl,
-    fetch_molecule_cactus,
-    fetch_molecule_drugbank,
-    clear_cache,
-    get_cache_info,
-)
-
-from autodock._autodock import (
-    # Logger (for CLI control)
+# ─── Core ──────────────────────────────────────────────────────────────────────
+from autodock._core import (
     autodock_logger,
-    # Docking
-    prepare_receptor,
-    prepare_ligand,
-    prepare_ligand_conformers,
-    find_binding_site,
+    DockingResult, build_docking_result,
+    _HAVE_PYMOL, _HAVE_VINA, _HAVE_RDKIT, _HAVE_PLIP, _HAVE_MEEKO,
+    _detect_receptor_source, _RECEPTOR_SOURCE_LABELS,
+)
+
+# ─── Structure fetch (already separate) ──────────────────────────────────────
+from autodock._structure_fetch import (
+    fetch_protein, fetch_protein_pdb,
+    fetch_protein_alphafold, fetch_protein_swissmodel, fetch_protein_pdb_redo,
+    fetch_molecule, fetch_molecule_pubchem,
+    fetch_molecule_chembl, fetch_molecule_cactus, fetch_molecule_drugbank,
+    clear_cache, get_cache_info,
+)
+
+# ─── Preparation ─────────────────────────────────────────────────────────────
+from autodock._preparation import (
+    prepare_receptor, prepare_ligand, prepare_ligand_conformers,
     find_top_pockets,
-    dock_ligand,
-    dock_ligand_multi,
-    dock_ligand_multi_conformer,
+    _compute_box_size, _run_p2rank_rescore,
+)
+
+# ─── Docking ───────────────────────────────────────────────────────────────────
+from autodock._docking import (
+    find_binding_site,
+    dock_ligand, dock_ligand_multi, dock_ligand_multi_conformer,
     virtual_screen,
-    compute_clash_score,
-    compute_rmsd,
-    validate_docking_protocol,
-    # Interaction detection
-    detect_interactions,
-    detect_interactions_plip,
-    render_interactions_2d,
-    render_ligplot_2d,
-    # Visualization (primary API)
-    render_scene,
-    # Specialized renderers
-    render_complex,
-    render_pocket,
-    render_interactions_pymol,
-    render_ligand_2d,
+    _detect_ligand_resn,
+    # New Part A + B functions
+    dock_ligand_flexible, prepare_receptor_with_waters,
+    dock_single, screen_ligands, batch_docking,
+)
+
+# ─── Clustering ──────────────────────────────────────────────────────────────
+from autodock._clustering import (
+    cluster_poses,
+)
+
+# ─── Validation ────────────────────────────────────────────────────────────────
+from autodock._validation import (
+    compute_clash_score, compute_rmsd, validate_docking_protocol,
+)
+
+# ─── Interactions (detection + 2D) ───────────────────────────────────────────────
+from autodock._interactions import (
+    detect_interactions, detect_interactions_plip,
+    render_interactions_2d, render_ligand_2d,
+)
+
+# ─── 3D Rendering ──────────────────────────────────────────────────────────────
+from autodock._rendering_3d import (
+    render_scene, render_complex, render_pocket, render_interactions_pymol,
     composite_summary,
+)
+
+# ─── LigPlot ─────────────────────────────────────────────────────────────────────
+from autodock._ligplot import (
+    render_ligplot_2d, render_ligplot_from_drw,
+    parse_ligplot_drw,
+)
+
+# ─── ADMET ─────────────────────────────────────────────────────────────────────
+from autodock._admet import (
+    predict_admet, filter_admet,
+    _predict_admet_neurosnap, _predict_admet_rdkit,
+)
+
+# ─── Database ────────────────────────────────────────────────────────────────────
+from autodock._database import (
+    fetch_bioactivities, compute_enrichment, print_enrichment_report,
+    sample_zinc_compounds, parse_zinc_tranche, lookup_zinc_id,
+)
+
+# ─── Scene presets (from existing config module) ────────────────────────────────
+from autodock._pymol_viz_config import (
+    SCENE_PRESETS, get_scene_preset,
+    DASH_PRESETS, DASH_COLOR_MAP,
+    STICK_PRESETS,
+    CARTOON_PUBLICATION, CARTOON_POCKET, CARTOON_INTERACTION,
+    PUBLICATION, PUBLICATION_OUTLINE, STANDARD,
 )
 
 __all__ = [
     # Docking workflow
-    'prepare_receptor',
-    'prepare_ligand',
-    'prepare_ligand_conformers',
-    'find_binding_site',
-    'find_top_pockets',
-    'dock_ligand',
-    'dock_ligand_multi',
-    'dock_ligand_multi_conformer',
+    'prepare_receptor', 'prepare_ligand', 'prepare_ligand_conformers',
+    'find_binding_site', 'find_top_pockets',
+    'dock_ligand', 'dock_ligand_multi', 'dock_ligand_multi_conformer',
     'virtual_screen',
-    'compute_clash_score',
-    'compute_rmsd',
-    'validate_docking_protocol',
+    'dock_ligand_flexible', 'prepare_receptor_with_waters',
+    'dock_single', 'screen_ligands', 'batch_docking',
+    'compute_clash_score', 'compute_rmsd', 'validate_docking_protocol', 'cluster_poses',
     # Interaction analysis
-    'detect_interactions',
-    'detect_interactions_plip',
-    'render_interactions_2d',
-    'render_ligplot_2d',
-    'render_ligplot_2d',
-    'render_ligplot_2d',
+    'detect_interactions', 'detect_interactions_plip',
+    'render_interactions_2d', 'render_ligand_2d',
+    'render_ligplot_2d', 'render_ligplot_from_drw', 'parse_ligplot_drw',
     # Visualization (primary)
     'render_scene',
     # Specialized renderers
-    'render_complex',
-    'render_pocket',
-    'render_interactions_pymol',
-    'render_ligand_2d',
+    'render_complex', 'render_pocket', 'render_interactions_pymol',
     'composite_summary',
     # Structure retrieval
-    'fetch_protein',
-    'fetch_protein_pdb',
-    'fetch_protein_alphafold',
-    'fetch_protein_swissmodel',
-    'fetch_protein_pdb_redo',
-    'fetch_molecule',
-    'fetch_molecule_pubchem',
-    'fetch_molecule_chembl',
-    'fetch_molecule_cactus',
-    'fetch_molecule_drugbank',
+    'fetch_protein', 'fetch_protein_pdb',
+    'fetch_protein_alphafold', 'fetch_protein_swissmodel', 'fetch_protein_pdb_redo',
+    'fetch_molecule', 'fetch_molecule_pubchem',
+    'fetch_molecule_chembl', 'fetch_molecule_cactus', 'fetch_molecule_drugbank',
+    # ADMET
+    'predict_admet', 'filter_admet',
+    # Database
+    'fetch_bioactivities', 'compute_enrichment', 'print_enrichment_report',
+    'sample_zinc_compounds', 'parse_zinc_tranche', 'lookup_zinc_id',
     # Scene presets
-    'SCENE_PRESETS',
-    'get_scene_preset',
-    # Logger (for CLI control)
-    'autodock_logger',
-    # Cache management
-    'clear_cache',
-    'get_cache_info',
-    # Parameter presets (for advanced users)
-    'DASH_PRESETS',
-    'DASH_COLOR_MAP',
+    'SCENE_PRESETS', 'get_scene_preset',
+    'DASH_PRESETS', 'DASH_COLOR_MAP',
     'STICK_PRESETS',
-    'CARTOON_PUBLICATION',
-    'CARTOON_POCKET',
-    'CARTOON_INTERACTION',
-    'PUBLICATION',
-    'PUBLICATION_OUTLINE',
-    'STANDARD',
+    'CARTOON_PUBLICATION', 'CARTOON_POCKET', 'CARTOON_INTERACTION',
+    'PUBLICATION', 'PUBLICATION_OUTLINE', 'STANDARD',
+    # Logger
+    'autodock_logger',
+    # Cache
+    'clear_cache', 'get_cache_info',
+    # Core types
+    'DockingResult', 'build_docking_result',
 ]

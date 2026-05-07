@@ -17,6 +17,9 @@ import urllib.error
 import urllib.parse
 from pathlib import Path
 
+from autodock._core import autodock_logger
+logger = autodock_logger
+
 try:
     from rdkit import Chem
     from rdkit.Chem import AllChem, Draw
@@ -585,17 +588,21 @@ def fetch_molecule(identifier: str,
 def fetch_molecule_cactus(identifier: str) -> dict:
     """
     Resolve a chemical name to SMILES via EBI OPSIN (Open Parser for Systematic
-    IUPAC Nomenclature). Best for IUPAC names; common names (caffeine, ibuprofen,
-    glucose) also accepted.
+    IUPAC Nomenclature).
+
+    Best for **IUPAC names**; common names (caffeine, ibuprofen, aspirin)
+    often fail because OPSIN is a grammar-based parser for systematic IUPAC
+    nomenclature, not a chemical-name search engine.  In those cases the
+    function automatically falls back to PubChem name search.
 
     Args:
-        identifier: Chemical name (IUPAC or common, e.g. 'caffeine', 'glucose')
+        identifier: Chemical name (IUPAC or common)
 
     Returns:
         dict with keys: name, smiles, source
 
     Raises:
-        ValueError: if the name cannot be parsed
+        ValueError: if the name cannot be parsed by OPSIN or PubChem
     """
     encoded = urllib.parse.quote(identifier, safe='')
     url = f"https://www.ebi.ac.uk/opsin/ws/{encoded}.smi"
@@ -618,9 +625,23 @@ def fetch_molecule_cactus(identifier: str) -> dict:
             'source': 'EBI OPSIN',
         }
     except urllib.error.HTTPError as e:
-        raise ValueError(f"OPSIN lookup failed for '{identifier}' (HTTP {e.code})")
+        # HTTP error from OPSIN — try PubChem fallback
+        logger.warning(f"[structure_fetch] OPSIN lookup failed for '{identifier}' (HTTP {e.code}), trying PubChem...")
     except Exception as e:
-        raise ValueError(f"OPSIN error: {e}")
+        logger.warning(f"[structure_fetch] OPSIN error for '{identifier}': {e}, trying PubChem...")
+
+    # ── PubChem fallback ────────────────────────────────────────────────
+    try:
+        result = fetch_molecule_pubchem(identifier, identifier_type='name')
+        result['source'] = f"PubChem (OPSIN fallback for '{identifier}')"
+        print(f"[structure_fetch] PubChem fallback: {identifier} → {result['smiles'][:50]}...")
+        return result
+    except Exception as e2:
+        raise ValueError(
+            f"Neither OPSIN nor PubChem could resolve '{identifier}'. "
+            f"OPSIN requires IUPAC names; PubChem name search also failed ({e2}). "
+            f"Try providing a SMILES string directly."
+        )
 
 
 # ─── Self-test ────────────────────────────────────────────────────────────────
