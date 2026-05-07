@@ -32,8 +32,9 @@ from autodock._structure_fetch import (
     fetch_protein, fetch_protein_pdb,
     fetch_protein_alphafold, fetch_protein_swissmodel, fetch_protein_pdb_redo,
     fetch_molecule, fetch_molecule_pubchem,
-    fetch_molecule_chembl, fetch_molecule_cactus, fetch_molecule_drugbank,
+    fetch_molecule_chembl, fetch_molecule_cactus, fetch_molecule_opsin, fetch_molecule_drugbank,
     fetch_bindingdb_affinity, fetch_bindingdb_by_target,
+    fetch_ligand_ccd, fetch_ligand_smiles, fetch_ligand_from_pdb,
     clear_cache, get_cache_info,
 )
 

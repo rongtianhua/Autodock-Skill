@@ -683,7 +683,7 @@ def fetch_molecule(identifier: str,
 
     Args:
         identifier: Compound name, SMILES, ID, etc.
-        source: 'pubchem' | 'chembl' | 'cactus'
+        source: 'pubchem' | 'chembl' | 'opsin' | 'cactus'
         identifier_type: 'name' | 'smiles' | 'inchi' | 'cid' (for pubchem)
         output_dir: Directory to save SDF/SMILES files
 
@@ -697,13 +697,15 @@ def fetch_molecule(identifier: str,
         return fetch_molecule_pubchem(identifier, identifier_type, output_sdf=sdf)
     elif source == 'chembl':
         return fetch_molecule_chembl(chembl_id=identifier) if identifier.startswith('CHEMBL') else fetch_molecule_chembl(molecule_name=identifier)
+    elif source == 'opsin':
+        return fetch_molecule_opsin(identifier)
     elif source == 'cactus':
         return fetch_molecule_cactus(identifier)
     else:
-        raise ValueError(f"Unknown source: {source}")
+        raise ValueError(f"Unknown source: {source} (valid: pubchem, chembl, opsin, cactus)")
 
 
-def fetch_molecule_cactus(identifier: str) -> dict:
+def fetch_molecule_opsin(identifier: str) -> dict:
     """
     Resolve a chemical name to SMILES via EBI OPSIN (Open Parser for Systematic
     IUPAC Nomenclature).
@@ -762,7 +764,192 @@ def fetch_molecule_cactus(identifier: str) -> dict:
         )
 
 
-# ─── BindingDB Affinity Queries ─────────────────────────────────────────────────
+def fetch_molecule_cactus(identifier: str) -> dict:
+    """
+    Resolve a chemical identifier via NIH CACTUS Chemical Identifier Resolver.
+
+    Supports: name ↔ SMILES ↔ InChI ↔ InChIKey ↔ CAS conversions.
+    More robust than OPSIN for common names and generic identifiers.
+
+    Args:
+        identifier: Chemical name, SMILES, InChI, InChIKey, or CAS number
+
+    Returns:
+        dict with keys: name, smiles, source
+
+    Raises:
+        ValueError: if the identifier cannot be resolved
+    """
+    encoded = urllib.parse.quote(identifier, safe='')
+    url = f"https://cactus.nci.nih.gov/chemical/structure/{encoded}/smiles"
+
+    try:
+        req = urllib.request.Request(url, headers={'Accept': 'text/plain'})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            smiles = resp.read().decode().strip()
+
+        if not smiles or smiles.startswith('Error'):
+            raise ValueError(f"CACTUS could not resolve: {identifier}")
+        if len(smiles) > 2000:
+            raise ValueError(f"CACTUS returned invalid SMILES for: {identifier}")
+
+        print(f"[structure_fetch] CACTUS: {identifier} → {smiles[:50]}...")
+        return {
+            'name': identifier,
+            'smiles': smiles,
+            'source': 'NIH CACTUS',
+        }
+    except urllib.error.HTTPError as e:
+        # HTTP error from CACTUS — try PubChem fallback
+        logger.warning(f"[structure_fetch] CACTUS lookup failed for '{identifier}' (HTTP {e.code}), trying PubChem...")
+    except Exception as e:
+        logger.warning(f"[structure_fetch] CACTUS error for '{identifier}': {e}, trying PubChem...")
+
+    # ── PubChem fallback ────────────────────────────────────────────────
+    try:
+        result = fetch_molecule_pubchem(identifier, identifier_type='name')
+        result['source'] = f"PubChem (CACTUS fallback for '{identifier}')"
+        print(f"[structure_fetch] PubChem fallback: {identifier} → {result['smiles'][:50]}...")
+        return result
+    except Exception as e2:
+        raise ValueError(
+            f"Neither CACTUS nor PubChem could resolve '{identifier}'. "
+            f"CACTUS supports: name, SMILES, InChI, InChIKey, CAS. "
+            f"Try providing a SMILES string directly."
+        )
+
+
+# ─── RCSB Chemical Component Dictionary (CCD) ──────────────────────────────────
+# PDB Ligand Expo has been retired (2026-02-13); CCD is the official replacement.
+
+def _ccd_cache_dir() -> Path:
+    """Get or create the CCD cache directory."""
+    cache = Path.home() / ".openclaw" / "structures_cache" / "ccd"
+    cache.mkdir(parents=True, exist_ok=True)
+    return cache
+
+
+def _ccd_cache_key(ligand_id: str) -> Path:
+    """Build a cache file path for a CCD query."""
+    cache = _ccd_cache_dir()
+    return cache / f"{ligand_id.upper()}.json"
+
+
+def fetch_ligand_ccd(ligand_id: str) -> dict:
+    """
+    Query RCSB Chemical Component Dictionary (CCD) for ligand information.
+
+    PDB Ligand Expo has been retired (2026-02-13); CCD is the official replacement.
+    Provides: name, formula, molecular weight, SMILES, InChI, stereochemistry.
+
+    Args:
+        ligand_id: 3-character CCD ID (e.g., 'ATP', 'HEM', 'GOL')
+
+    Returns:
+        dict with keys:
+          - id, name, formula, formula_weight
+          - smiles, inchi, inchi_key
+          - stereochemistry (if available)
+          - synonyms (list)
+
+    Raises:
+        ValueError: if ligand_id invalid or not found
+    """
+    ligand_id = ligand_id.upper()
+    if len(ligand_id) != 3:
+        raise ValueError(f"CCD ID must be 3 characters, got: {ligand_id}")
+
+    # Check cache
+    cache_key = _ccd_cache_key(ligand_id)
+    if cache_key.exists():
+        with open(cache_key) as f:
+            return json.load(f)
+
+    # RCSB CCD REST API
+    url = f"https://data.rcsb.org/rest/v1/core/chemcomp/{ligand_id}"
+
+    try:
+        req = urllib.request.Request(url, headers={'Accept': 'application/json'})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        raise ValueError(f"CCD entry not found: {ligand_id} (HTTP {e.code})")
+    except Exception as e:
+        raise ValueError(f"CCD query failed: {e}")
+
+    # Extract relevant fields
+    chem_comp = data.get('chem_comp', {})
+    rcsb = data.get('rcsb_chem_comp_info', {})
+
+    result = {
+        'id': chem_comp.get('id', ligand_id),
+        'name': chem_comp.get('name', ''),
+        'formula': chem_comp.get('formula', ''),
+        'formula_weight': chem_comp.get('formula_weight', None),
+        'smiles': rcsb.get('smiles', ''),
+        'inchi': rcsb.get('inchi', ''),
+        'inchi_key': rcsb.get('inchi_key', ''),
+        'stereochemistry': rcsb.get('stereochemistry', ''),
+        'synonyms': rcsb.get(' synonyms', []),
+        'source': 'RCSB CCD',
+    }
+
+    # Cache result
+    with open(cache_key, 'w') as f:
+        json.dump(result, f, indent=2)
+
+    return result
+
+
+def fetch_ligand_smiles(ligand_id: str) -> str:
+    """
+    Quick lookup: get SMILES for a CCD ligand.
+
+    Args:
+        ligand_id: 3-character CCD ID
+
+    Returns:
+        SMILES string, or empty string if not found
+    """
+    info = fetch_ligand_ccd(ligand_id)
+    return info.get('smiles', '')
+
+
+def fetch_ligand_from_pdb(pdb_id: str, ligand_id: str,
+                          output_path: str = None) -> str:
+    """
+    Download ligand coordinates from a specific PDB entry.
+
+    Uses RCSB ModelServer API to extract the ligand in mmCIF/SDF/MOL format.
+    Useful for: redocking validation with native crystal pose.
+
+    Args:
+        pdb_id: PDB entry ID (e.g., '1ATP')
+        ligand_id: CCD ligand ID (e.g., 'ATP')
+        output_path: Where to save the file (default: structures_cache/{pdb_id}_{ligand_id}.sdf)
+
+    Returns:
+        Path to downloaded ligand file
+    """
+    pdb_id = pdb_id.upper()
+    ligand_id = ligand_id.upper()
+
+    if output_path is None:
+        cache = _ccd_cache_dir()
+        output_path = str(cache / f"{pdb_id}_{ligand_id}.sdf")
+
+    # RCSB ModelServer: ligand coordinates in SDF format
+    url = f"https://models.rcsb.org/v1/{pdb_id}/ligand?auth_asym_id={ligand_id}&encoding=sdf"
+
+    try:
+        urllib.request.urlretrieve(url, output_path)
+        if os.path.getsize(output_path) == 0:
+            raise ValueError(f"Empty ligand file returned for {pdb_id}/{ligand_id}")
+    except Exception as e:
+        raise ValueError(f"Ligand download failed for {pdb_id}/{ligand_id}: {e}")
+
+    print(f"[structure_fetch] Ligand {ligand_id} from {pdb_id}: {output_path}")
+    return output_path
 
 import json
 

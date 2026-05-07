@@ -839,3 +839,49 @@ python -m autodock bindingdb P00533 --type uniprot --max-results 50
 1. **虚拟筛选验证**：对接得分 vs 实验 Ki 相关性分析
 2. **新靶点评估**：BindingDB 中是否有已知配体
 3. **亲和力预测**：基于结构对接为无实验数据化合物预测活性
+
+---
+
+## 附录 C：小分子数据源总览
+
+| 数据源 | 技能函数 | 覆盖范围 | 状态 |
+|--------|---------|---------|------|
+| **PubChem** | `fetch_molecule_pubchem()` | 1.1亿化合物结构 | ✅ |
+| **ChEMBL** | `fetch_molecule_chembl()` | 200万生物活性数据 | ✅ |
+| **RCSB CCD** | `fetch_ligand_ccd()` | PDB共晶配体化学信息 | ✅ |
+| **NIH CACTUS** | `fetch_molecule_cactus()` | 标识符万能转换 | ✅ |
+| **EBI OPSIN** | `fetch_molecule_opsin()` | IUPAC系统命名解析 | ✅ |
+| **BindingDB** | `fetch_bindingdb_affinity()` | 160万实验亲和力 | ✅ |
+| **DrugBank** | `fetch_molecule_drugbank()` | 药物靶点（需本地XML） | ⚠️ |
+
+---
+
+## 附录 D：RCSB CCD 配体查询（Ligand Expo 替代方案）
+
+### 背景
+- **PDB Ligand Expo 已退役**（2026-02-13）
+- **RCSB Chemical Component Dictionary (CCD)** 是官方替代
+- 覆盖 PDB 中所有小分子配体（ATP、NAD、血红素等）
+
+### 使用方式
+```python
+from autodock import fetch_ligand_ccd, fetch_ligand_smiles, fetch_ligand_from_pdb
+
+# 查询配体化学信息
+info = fetch_ligand_ccd("ATP")
+# Returns: {'id': 'ATP', 'name': 'ADENOSINE-5-TRIPHOSPHATE',
+#           'formula': 'C10 H16 N5 O13 P3', 'formula_weight': 507.181,
+#           'smiles': '...', 'inchi': '...', ...}
+
+# 快速获取 SMILES
+smiles = fetch_ligand_smiles("HEM")  # 血红素
+
+# 下载特定 PDB 条目中的配体坐标（用于重对接验证）
+sdf_path = fetch_ligand_from_pdb("1ATP", "ATP")
+# → 返回 SDF 文件路径，可直接用于对接
+```
+
+### 使用场景
+1. **重对接验证**：获取晶体结构中配体的原始构象作为参考
+2. **虚拟筛选基准**：用已知活性配体测试对接方法准确性
+3. **分子比较**：比较对接 pose 与晶体构象的 RMSD
