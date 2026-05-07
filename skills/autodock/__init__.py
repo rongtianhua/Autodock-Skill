@@ -30,11 +30,13 @@ from autodock._core import (
 # ─── Structure fetch (already separate) ──────────────────────────────────────
 from autodock._structure_fetch import (
     fetch_protein, fetch_protein_pdb,
-    fetch_protein_alphafold, fetch_protein_swissmodel, fetch_protein_pdb_redo,
+    fetch_protein_alphafold, fetch_protein_swissmodel, fetch_protein_swissmodel_advanced, fetch_protein_pdb_redo,
     fetch_molecule, fetch_molecule_pubchem,
     fetch_molecule_chembl, fetch_molecule_cactus, fetch_molecule_opsin, fetch_molecule_drugbank,
     fetch_bindingdb_affinity, fetch_bindingdb_by_target,
     fetch_ligand_ccd, fetch_ligand_smiles, fetch_ligand_from_pdb,
+    swissmodel_get_token, swissmodel_clear_token,
+    swissmodel_submit_alignment, swissmodel_check_status, swissmodel_download_result,
     clear_cache, get_cache_info,
 )
 

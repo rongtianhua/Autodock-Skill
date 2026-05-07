@@ -327,50 +327,285 @@ def fetch_protein_alphafold(uniprot_id: str, output_path: str = None) -> str:
         raise ValueError(f"AlphaFold entry not found: {uniprot_id} (HTTP {e.code})")
 
 
-def fetch_protein_swissmodel(uniprot_id: str, output_path: str = None) -> str:
+def fetch_protein_swissmodel(uniprot_id: str, output_path: str = None,
+                             provider_filter: str = 'any',
+                             min_coverage: float = 0.3,
+                             min_identity: float = 0.0,
+                             return_all: bool = False) -> str | list:
     """
     Download protein structure from SWISS-MODEL Repository (homology modeling).
 
+    Enhanced with quality scoring (GMQE, QMEAN, identity, coverage) and
+    intelligent model selection.
+
     Args:
         uniprot_id: UniProt accession (e.g. 'P00533')
-        output_path: Optional output path
+        output_path: Output path (default: ./structures/{uniprot_id}_swissmodel.pdb)
+                     If return_all=True, output_path is used as basename prefix.
+        provider_filter: 'any' | 'swissmodel' | 'pdb'
+                         'any': best available (default)
+                         'swissmodel': homology models only
+                         'pdb': experimental structures only
+        min_coverage: Minimum sequence coverage (default: 0.3)
+        min_identity: Minimum sequence identity (default: 0.0)
+        return_all: If True, return all matching models with quality report
 
     Returns:
-        Path to downloaded PDB file
+        str: Path to downloaded PDB file (default)
+        list: [{'path': str, 'provider': str, 'template': str,
+                'gmqe': float|None, 'qmean': float|None,
+                'identity': float, 'coverage': float,
+                'from': int, 'to': int}] (if return_all=True)
 
     Raises:
-        ValueError: If no model available for this UniProt entry
+        ValueError: If no model meets criteria
     """
     uniprot_id = uniprot_id.upper()
-    # SWISS-MODEL API to get best model
     api_url = f"https://swissmodel.expasy.org/repository/uniprot/{uniprot_id}.json"
-    model_url = None
 
     try:
         req = urllib.request.Request(api_url, headers={'Accept': 'application/json'})
         with urllib.request.urlopen(req, timeout=15) as resp:
-            import json
             data = json.loads(resp.read())
-            results = data.get('result', {}).get('structures', [])
-            if results:
-                # Get the first/best model — use 'coordinates' field for .pdb URL
-                best = results[0]
-                model_url = best.get('coordinates')
+            all_structures = data.get('result', {}).get('structures', [])
     except Exception as e:
         raise ValueError(f"SWISS-MODEL lookup failed: {e}")
 
-    if not model_url:
-        raise ValueError(f"No SWISS-MODEL structure available for: {uniprot_id}")
+    if not all_structures:
+        raise ValueError(f"No SWISS-MODEL structures available for: {uniprot_id}")
 
+    # ── Extract quality scores and filter ───────────────────────────
+    candidates = []
+    for s in all_structures:
+        provider = s.get('provider', 'unknown')
+        coverage = s.get('coverage', 0.0)
+        identity = s.get('identity', 0.0)
+        coords_url = s.get('coordinates')
+
+        # Provider filter
+        if provider_filter != 'any' and provider.lower() != provider_filter.lower():
+            continue
+
+        # Coverage/identity thresholds
+        if coverage < min_coverage or identity < min_identity:
+            continue
+
+        # Quality scores (SWISSMODEL entries have gmqe/qmean; PDB entries don't)
+        gmqe = s.get('gmqe') if provider == 'SWISSMODEL' else None
+        qmean = s.get('qmean') if provider == 'SWISSMODEL' else None
+
+        # Scoring: prefer SWISSMODEL with high GMQE/QMEAN, then PDB with high coverage
+        if provider == 'SWISSMODEL' and gmqe is not None:
+            score = gmqe * coverage * (1 + identity)
+        else:
+            score = coverage * (1 + identity)
+
+        candidates.append({
+            'structure': s,
+            'provider': provider,
+            'template': s.get('template', ''),
+            'gmqe': gmqe,
+            'qmean': qmean,
+            'identity': identity,
+            'coverage': coverage,
+            'from': s.get('from', 0),
+            'to': s.get('to', 0),
+            'score': score,
+            'url': coords_url,
+        })
+
+    if not candidates:
+        raise ValueError(
+            f"No SWISS-MODEL structures meet criteria for {uniprot_id} "
+            f"(provider={provider_filter}, min_coverage={min_coverage}, "
+            f"min_identity={min_identity})"
+        )
+
+    # Sort by score descending
+    candidates.sort(key=lambda x: x['score'], reverse=True)
+
+    # ── Download ────────────────────────────────────────────────────
+    if return_all:
+        results = []
+        base_dir = os.path.dirname(output_path) or './structures'
+        os.makedirs(base_dir, exist_ok=True)
+        base_name = os.path.splitext(os.path.basename(output_path or f"{uniprot_id}_swissmodel.pdb"))[0]
+
+        for i, c in enumerate(candidates):
+            suffix = f"_{i}" if i > 0 else ""
+            dest = os.path.join(base_dir, f"{base_name}{suffix}.pdb")
+            try:
+                urllib.request.urlretrieve(c['url'], dest)
+                results.append({
+                    'path': dest,
+                    'provider': c['provider'],
+                    'template': c['template'],
+                    'gmqe': c['gmqe'],
+                    'qmean': c['qmean'],
+                    'identity': c['identity'],
+                    'coverage': c['coverage'],
+                    'from': c['from'],
+                    'to': c['to'],
+                })
+                logger.info(f"[structure_fetch] SWISS-MODEL #{i+1}: {dest} "
+                           f"({c['provider']}, GMQE={c['gmqe']}, QMEAN={c['qmean']}, "
+                           f"cov={c['coverage']:.2f}, id={c['identity']:.2f})")
+            except Exception as e:
+                logger.warning(f"[structure_fetch] Download failed for model #{i+1}: {e}")
+
+        if not results:
+            raise ValueError(f"All downloads failed for {uniprot_id}")
+        return results
+
+    # Single best model
+    best = candidates[0]
     dest = output_path or f"./structures/{uniprot_id}_swissmodel.pdb"
     os.makedirs(os.path.dirname(dest) or '.', exist_ok=True)
 
     try:
-        urllib.request.urlretrieve(model_url, dest)
-        print(f"[structure_fetch] SWISS-MODEL downloaded: {dest}")
+        urllib.request.urlretrieve(best['url'], dest)
+        logger.info(
+            f"[structure_fetch] SWISS-MODEL best model: {dest} "
+            f"(provider={best['provider']}, template={best['template']}, "
+            f"GMQE={best['gmqe']}, QMEAN={best['qmean']}, "
+            f"coverage={best['coverage']:.2f}, identity={best['identity']:.2f})"
+        )
         return dest
     except urllib.error.HTTPError as e:
         raise ValueError(f"SWISS-MODEL download failed: {uniprot_id} (HTTP {e.code})")
+
+
+def fetch_protein_swissmodel_advanced(uniprot_id: str,
+                                      output_dir: str = "./structures",
+                                      min_gmqe: float = 0.0,
+                                      min_qmean: float = None,
+                                      require_full_coverage: bool = False,
+                                      fallback_alphafold: bool = True) -> dict:
+    """
+    Fully automated homology modeling with quality-based selection.
+
+    Workflow:
+      1. Query SwissModel Repository for all models
+      2. Filter by quality thresholds (GMQE, QMEAN, coverage)
+      3. Select best model
+      4. If no good model, fallback to AlphaFold DB
+      5. Return model + quality report
+
+    Args:
+        uniprot_id: UniProt accession (e.g. 'Q9H825')
+        output_dir: Directory to save models
+        min_gmqe: Minimum GMQE score (0-1, default: 0.0 = no filter)
+        min_qmean: Minimum QMEAN Z-score (default: None = no filter)
+        require_full_coverage: If True, require coverage >= 0.9
+        fallback_alphafold: If True, fallback to AlphaFold when no good model
+
+    Returns:
+        dict with keys:
+          - path: str (PDB file path)
+          - source: 'swissmodel' | 'alphafold' | 'none'
+          - provider: str (PDB or SWISSMODEL)
+          - template: str
+          - gmqe: float | None
+          - qmean: float | None
+          - identity: float
+          - coverage: float
+          - quality_grade: 'excellent' | 'good' | 'moderate' | 'poor'
+          - all_candidates: list (all models found, sorted by quality)
+
+    Raises:
+        ValueError: If no model found and fallback disabled
+    """
+    uniprot_id = uniprot_id.upper()
+    os.makedirs(output_dir, exist_ok=True)
+
+    # ── Step 1: Query all models ────────────────────────────────────
+    try:
+        all_models = fetch_protein_swissmodel(
+            uniprot_id,
+            output_path=os.path.join(output_dir, f"{uniprot_id}_swissmodel.pdb"),
+            provider_filter='any',
+            min_coverage=0.3,
+            return_all=True,
+        )
+    except ValueError:
+        all_models = []
+
+    # ── Step 2: Filter by thresholds ────────────────────────────────
+    qualified = []
+    for m in all_models:
+        # GMQE filter
+        if min_gmqe > 0 and (m.get('gmqe') is None or m['gmqe'] < min_gmqe):
+            continue
+        # QMEAN filter
+        if min_qmean is not None and (m.get('qmean') is None or m['qmean'] < min_qmean):
+            continue
+        # Full coverage filter
+        if require_full_coverage and m.get('coverage', 0) < 0.9:
+            continue
+        qualified.append(m)
+
+    # ── Step 3: Select best ─────────────────────────────────────────
+    if qualified:
+        best = qualified[0]
+
+        # Quality grading
+        gmqe = best.get('gmqe')
+        qmean = best.get('qmean')
+        identity = best.get('identity', 0)
+        coverage = best.get('coverage', 0)
+
+        if gmqe is not None and gmqe >= 0.7 and identity >= 0.5:
+            grade = 'excellent'
+        elif gmqe is not None and gmqe >= 0.5 and identity >= 0.3:
+            grade = 'good'
+        elif coverage >= 0.5:
+            grade = 'moderate'
+        else:
+            grade = 'poor'
+
+        return {
+            'path': best['path'],
+            'source': 'swissmodel',
+            'provider': best['provider'],
+            'template': best.get('template', ''),
+            'gmqe': gmqe,
+            'qmean': qmean,
+            'identity': identity,
+            'coverage': coverage,
+            'quality_grade': grade,
+            'all_candidates': all_models,
+        }
+
+    # ── Step 4: Fallback to AlphaFold ─────────────────────────────────
+    if fallback_alphafold:
+        logger.warning(
+            f"[structure_fetch] No qualified SwissModel for {uniprot_id}, "
+            f"falling back to AlphaFold"
+        )
+        try:
+            af_path = fetch_protein_alphafold(uniprot_id,
+                os.path.join(output_dir, f"AF-{uniprot_id}.pdb"))
+            return {
+                'path': af_path,
+                'source': 'alphafold',
+                'provider': 'AlphaFold DB',
+                'template': None,
+                'gmqe': None,
+                'qmean': None,
+                'identity': 1.0,  # Self-prediction
+                'coverage': 1.0,
+                'quality_grade': 'moderate',  # AlphaFold ~ moderate for docking
+                'all_candidates': all_models,
+            }
+        except Exception as e:
+            logger.error(f"[structure_fetch] AlphaFold fallback failed: {e}")
+
+    # ── Step 5: Nothing available ───────────────────────────────────
+    raise ValueError(
+        f"No suitable model for {uniprot_id}. "
+        f"Tried SwissModel ({len(all_models)} found, 0 qualified) "
+        f"and AlphaFold fallback."
+    )
 
 
 def fetch_protein_pdb_redo(pdb_id: str, output_path: str = None) -> str:
@@ -950,6 +1185,215 @@ def fetch_ligand_from_pdb(pdb_id: str, ligand_id: str,
 
     print(f"[structure_fetch] Ligand {ligand_id} from {pdb_id}: {output_path}")
     return output_path
+
+
+# ─── SwissModel REST API Token Management ────────────────────────────────────
+
+import json as _json  # Avoid conflict with json module import below
+
+_SWISSMODEL_TOKEN_FILE = Path.home() / ".openclaw" / "swissmodel_token.json"
+
+
+def swissmodel_get_token(username: str = None, password: str = None) -> str:
+    """
+    Get or refresh SwissModel REST API Token.
+
+    If username/password provided, fetches new token from SwissModel.
+    Otherwise, tries to load cached token from ~/.openclaw/swissmodel_token.json
+
+    Args:
+        username: SwissModel/Expasy username (optional)
+        password: SwissModel/Expasy password (optional)
+
+    Returns:
+        API token string
+
+    Raises:
+        ValueError: If no cached token and no credentials provided
+        RuntimeError: If token fetch fails
+    """
+    # Check cache
+    if _SWISSMODEL_TOKEN_FILE.exists() and not (username and password):
+        with open(_SWISSMODEL_TOKEN_FILE) as f:
+            cached = _json.load(f)
+            token = cached.get('token')
+            if token:
+                return token
+
+    # Need credentials
+    if not (username and password):
+        raise ValueError(
+            "No cached SwissModel token found. "
+            "Please provide username and password, or register at "
+            "https://swissmodel.expasy.org and get API credentials."
+        )
+
+    # Fetch new token
+    url = "https://swissmodel.expasy.org/api-token-auth/"
+    payload = {"username": username, "password": password}
+    headers = {"Content-Type": "application/json"}
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=_json.dumps(payload).encode(),
+            headers=headers,
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = _json.loads(resp.read())
+            token = data.get("token")
+            if not token:
+                raise RuntimeError(f"Token response missing 'token' field: {data}")
+    except Exception as e:
+        raise RuntimeError(f"SwissModel token fetch failed: {e}")
+
+    # Cache token
+    _SWISSMODEL_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(_SWISSMODEL_TOKEN_FILE, 'w') as f:
+        _json.dump({"token": token}, f)
+
+    print(f"[structure_fetch] SwissModel token cached: {_SWISSMODEL_TOKEN_FILE}")
+    return token
+
+
+def swissmodel_clear_token() -> None:
+    """Clear cached SwissModel token."""
+    if _SWISSMODEL_TOKEN_FILE.exists():
+        _SWISSMODEL_TOKEN_FILE.unlink()
+        print("[structure_fetch] SwissModel token cleared")
+
+
+def swissmodel_submit_alignment(token: str,
+                                 target_sequence: str,
+                                 template_pdb: str,
+                                 template_chain: str,
+                                 template_sequence: str = None,
+                                 template_offset: int = 0,
+                                 project_title: str = None) -> dict:
+    """
+    Submit a homology modeling job to SwissModel REST API.
+
+    Note: This requires a valid API token (get via swissmodel_get_token).
+    The alignment API requires PRE-DETERMINED template information —
+    use fetch_protein_swissmodel_advanced() for automatic template search.
+
+    Args:
+        token: SwissModel API token
+        target_sequence: Target protein sequence (FASTA string)
+        template_pdb: Template PDB ID
+        template_chain: Template chain name
+        template_sequence: Template sequence (optional, fetched if None)
+        template_offset: Offset of template sequence in seqres
+        project_title: Project name (optional)
+
+    Returns:
+        dict with job_id, status_url, etc.
+
+    Raises:
+        RuntimeError: If submission fails
+    """
+    import base64
+
+    # Fetch template sequence if not provided
+    if template_sequence is None:
+        try:
+            # Get sequence from RCSB
+            seq_url = f"https://data.rcsb.org/rest/v1/core/polymer_entity/{template_pdb}/{template_chain}"
+            req = urllib.request.Request(seq_url, headers={'Accept': 'application/json'})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = _json.loads(resp.read())
+                template_sequence = data.get('entity_poly', {}).get('pdbx_seq_one_letter_code', '')
+        except Exception as e:
+            raise RuntimeError(f"Could not fetch template sequence for {template_pdb}.{template_chain}: {e}")
+
+    # Build alignment data
+    alignment_data = {
+        "target_sequences": target_sequence,
+        "template_sequence": template_sequence,
+        "template_seqres_offset": template_offset,
+        "pdb_id": template_pdb,
+        "auth_asym_id": template_chain,
+    }
+    if project_title:
+        alignment_data["project_title"] = project_title
+
+    # Submit
+    url = "https://swissmodel.expasy.org/alignment/"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Token {token}"
+    }
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=_json.dumps(alignment_data).encode(),
+            headers=headers,
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = _json.loads(resp.read())
+    except Exception as e:
+        raise RuntimeError(f"SwissModel alignment submission failed: {e}")
+
+    print(f"[structure_fetch] SwissModel alignment submitted: {result.get('project_id', 'N/A')}")
+    return result
+
+
+def swissmodel_check_status(token: str, project_id: str) -> dict:
+    """
+    Check status of a SwissModel alignment job.
+
+    Args:
+        token: SwissModel API token
+        project_id: Project ID from submission
+
+    Returns:
+        dict with status, models, etc.
+    """
+    url = f"https://swissmodel.expasy.org/project/{project_id}/models/"
+    headers = {"Authorization": f"Token {token}"}
+
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return _json.loads(resp.read())
+    except Exception as e:
+        raise RuntimeError(f"Status check failed: {e}")
+
+
+def swissmodel_download_result(token: str, project_id: str, model_id: str,
+                               output_path: str) -> str:
+    """
+    Download a completed SwissModel result.
+
+    Args:
+        token: SwissModel API token
+        project_id: Project ID
+        model_id: Model ID (from status check)
+        output_path: Where to save the PDB file
+
+    Returns:
+        Path to downloaded PDB file
+    """
+    url = f"https://swissmodel.expasy.org/project/{project_id}/models/{model_id}/"
+    headers = {"Authorization": f"Token {token}"}
+
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = _json.loads(resp.read())
+            download_url = data.get('coordinates')
+            if not download_url:
+                raise ValueError("No download URL in response")
+
+        urllib.request.urlretrieve(download_url, output_path)
+        print(f"[structure_fetch] SwissModel result: {output_path}")
+        return output_path
+    except Exception as e:
+        raise RuntimeError(f"Download failed: {e}")
+
 
 import json
 
