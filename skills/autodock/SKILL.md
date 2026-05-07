@@ -125,7 +125,12 @@ df = sample_zinc_compounds(n=50, h_donors_range=(0, 3), logp_range=(2, 4), mw_ra
 print(df[['zinc_id', 'smiles']].head())
 
 # 2. 制备
-prepare_receptor("protein.pdb", "protein.pdbqt")
+# 受体：支持 .pdb / .cif / .pdbx（ProDy 自动转换）
+prepare_receptor("protein.pdb", "protein.pdbqt")                    # 默认：PDB
+prepare_receptor("protein.cif", "protein.pdbqt")                    # 自动检测 .cif
+prepare_receptor("protein.txt", "protein.pdbqt", input_format='cif')  # 强制格式
+
+# 配体
 prepare_ligand(mol['smiles'], "ligand.pdbqt")
 
 # 3. 结合位点

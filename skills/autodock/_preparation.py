@@ -26,38 +26,74 @@ from autodock._core import _P2RANK_DIR, _P2RANK_PRANK, _P2RANK_JAR, _JAVA_HOME
 from autodock._core import _detect_receptor_source, _RECEPTOR_SOURCE_LABELS, _safe_color
 
 def prepare_receptor(pdb_file: str, output_pdbqt: str,
-                    remove_waters: bool = True) -> str:
+                    remove_waters: bool = True,
+                    input_format: str = 'auto') -> str:
     """
-    Prepare protein structure for docking (PDB → PDBQT).
+    Prepare protein structure for docking (PDB/mmCIF → PDBQT).
 
     Uses meeko (Polymer + PDBQTWriterLegacy) instead of openbabel.
+    Supports .pdb, .cif, and .pdbx input formats via ProDy auto-conversion.
 
     Args:
-        pdb_file: Input PDB file path
+        pdb_file: Input structure file path (.pdb, .cif, or .pdbx)
         output_pdbqt: Output PDBQT file path
         remove_waters: Remove HOH / WAT residues
+        input_format: 'auto' | 'pdb' | 'cif' | 'pdbx'
+                      'auto' (default): detect from file extension
+                      'pdb': force PDB text parsing
+                      'cif'/'pdbx': parse via ProDy then convert to PDB
 
     Returns:
         Path to output PDBQT file
 
     Raises:
-        FileNotFoundError: If input PDB file does not exist
+        FileNotFoundError: If input file does not exist
         TypeError: If arguments are not of expected types
+        RuntimeError: If ProDy required for .cif but not available
     """
     if not isinstance(pdb_file, str):
         raise TypeError(f"pdb_file must be str, got {type(pdb_file).__name__}")
     if not isinstance(output_pdbqt, str):
         raise TypeError(f"output_pdbqt must be str, got {type(output_pdbqt).__name__}")
     if not os.path.exists(pdb_file):
-        raise FileNotFoundError(f"PDB file not found: {pdb_file}")
+        raise FileNotFoundError(f"Structure file not found: {pdb_file}")
 
     from meeko import ResidueChemTemplates
 
     if not _HAVE_MEEKO or not _HAVE_RDKIT:
         raise RuntimeError("meeko and rdkit required: conda activate autodock313")
 
-    with open(pdb_file, 'r') as f:
-        pdb_content = f.read()
+    # ── Format detection ──────────────────────────────────────────────
+    ext = os.path.splitext(pdb_file)[1].lower()
+    if input_format == 'auto':
+        if ext in ('.cif', '.pdbx'):
+            input_format = 'cif'
+        else:
+            input_format = 'pdb'
+    elif input_format not in ('pdb', 'cif', 'pdbx'):
+        raise ValueError(f"input_format must be 'auto'|'pdb'|'cif'|'pdbx', got: {input_format}")
+
+    # ── Read/convert input ────────────────────────────────────────────
+    if input_format in ('cif', 'pdbx'):
+        # ProDy mmCIF → PDB text conversion
+        try:
+            import prody
+        except ImportError:
+            raise RuntimeError(
+                "ProDy required for .cif/.pdbx parsing. "
+                "Install: conda install -c conda-forge prody"
+            )
+        structure = prody.parseMMCIF(pdb_file)
+        # Write to PDB string in memory
+        import io
+        pdb_stream = io.StringIO()
+        prody.writePDBStream(pdb_stream, structure)
+        pdb_content = pdb_stream.getvalue()
+        logger.info(f"[autodock] Converted {ext} → PDB via ProDy ({structure.numAtoms()} atoms)")
+    else:
+        # Direct PDB text read
+        with open(pdb_file, 'r') as f:
+            pdb_content = f.read()
 
     if remove_waters:
         lines = [l for l in pdb_content.split('\n')
