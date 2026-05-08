@@ -86,6 +86,12 @@ from autodock._ligplot import (
     parse_ligplot_drw,
 )
 
+# ─── MM/PBSA ───────────────────────────────────────────────────────────────────
+from autodock._mmpbsa import (
+    compute_mmpbsa, mmpbsa_rank_ligands,
+    MMPBSAResult,
+)
+
 # ─── ADMET ─────────────────────────────────────────────────────────────────────
 from autodock._admet import (
     predict_admet, filter_admet,
@@ -132,6 +138,9 @@ __all__ = [
     'fetch_molecule_chembl', 'fetch_molecule_cactus', 'fetch_molecule_drugbank',
     # ADMET
     'predict_admet', 'filter_admet',
+    # MM/PBSA
+    'compute_mmpbsa', 'mmpbsa_rank_ligands',
+    'MMPBSAResult',
     # Database
     'fetch_bioactivities', 'compute_enrichment', 'print_enrichment_report',
     'sample_zinc_compounds', 'parse_zinc_tranche', 'lookup_zinc_id',

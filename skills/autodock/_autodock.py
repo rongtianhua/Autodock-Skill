@@ -82,3 +82,9 @@ from autodock._database import (
     fetch_bioactivities, compute_enrichment, print_enrichment_report,
     parse_zinc_tranche, _zinc_tranche_url, sample_zinc_compounds, lookup_zinc_id,
 )
+
+# ─── MM/PBSA ─────────────────────────────────────────────────────────────────
+from autodock._mmpbsa import (
+    compute_mmpbsa, mmpbsa_rank_ligands,
+    MMPBSAResult,
+)

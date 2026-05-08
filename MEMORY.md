@@ -65,6 +65,19 @@
 - **修复**: 改为先调用 `detect_interactions_plip()` 获取相互作用列表，再传递给渲染函数 (daily log, 2026-05-06)
 
 - **原因**: 直接传递 `args.poses`（字符串路径）给 `render_interactions_2d` 的 `interactions` 参数（应为列表） (daily log, 2026-05-06)
+
+
+## Promoted Entries (2026-05-08)
+
+- **逻辑bug**：`'GLY A 501' in l or 'TYR A 502' in l` 的 OR 本身是对的，但**这整个检查只针对 6LU7 这一个 PDB**。换其他含共结晶配体的 PDB（如 HIV-1 蛋白酶 1BVE 含 JG1），PLIP 会再次把共结晶配体误识别为待分析配体，导致相互作用映射全部错误。 (daily log, 2026-05-07)
+
+- **修复**：改为 `# Set output paths (fields already defined in DockingResult dataclass)` (daily log, 2026-05-07)
+
+- **`ensemble_mode=True`**（默认）：通过 `_generate_receptor_variants()` 对口袋附近残基做 CA 为中心的侧链旋转（8 步 × 45°），生成多个受体构象变体，对每个变体分别对接，最后从全部结果中选最优 pose。这是常见的 **ensemble docking** 策略，比真正的柔性残基更实用。 (daily log, 2026-05-07)
+
+- **autodock 技能** — P0/P1 全部修复，68 项测试通过，git 提交 `c7fd3c6` (daily log, 2026-05-07)
+
+- **慢测试套件：** 6项全部通过（含 `dock_single` SMILES对接、`batch_docking` 2×2矩阵、`screen_ligands` end-to-end） (daily log, 2026-05-07)
 ## Promoted Entries (2026-05-07)
 
 - **openclaw-plugin-management** (skill, 2026-04-24)

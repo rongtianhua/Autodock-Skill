@@ -464,6 +464,174 @@ render_interactions_2d(
 
 ---
 
+## MM/PBSA — 对接后结合自由能重评分
+
+对接完成后，Vina 的打分函数给出的是结合亲和力的近似值。MM/PBSA（分子力学/泊松-玻尔兹曼表面积）提供更精细的能量分解，可以：
+
+1. **相对比较**不同配体的结合强度排序
+2. **能量分解**识别对结合贡献最大的关键残基（hot-spot residues）
+3. **论文数据**提供 ΔG_bind、静电能、范德华能、溶剂化能的分解表格
+
+### 快速使用
+
+```python
+from autodock import compute_mmpbsa
+
+result = compute_mmpbsa(
+    receptor_pdb="6LU7.pdb",
+    ligand_pdbqt="nirmatrelvir_docked.pdbqt",
+    decomp=True,       # 启用残基级能量分解
+    compute_sasa=True, # 包含非极性溶剂化能（较慢但更完整）
+)
+
+print(result.summary())
+
+# 论文表格数据
+for row in result.to_dataframe_rows()[:10]:
+    print(f"{row['residue']:12s}  {row['energy_kcal_mol']:+.2f} kcal/mol")
+```
+
+### 输出字段
+
+| 字段 | 说明 | 用途 |
+|------|------|------|
+| `delta_g_bind` | 总结合自由能 ΔG_bind (kcal/mol) | 配体排序 |
+| `delta_e_elec` | 库仑静电能 | 盐桥/电荷相互作用 |
+| `delta_e_vdw` | Lennard-Jones 范德华能 | 疏水口袋匹配 |
+| `delta_g_gb` | GB 极性溶剂化能 | 溶剂对电荷的屏蔽 |
+| `delta_g_sa` | SASA 非极性溶剂化能 | 疏水效应 |
+| `per_residue` | 每个残基的能量贡献 | 识别关键残基 |
+
+### 多配体排序
+
+```python
+from autodock import mmpbsa_rank_ligands
+
+results = mmpbsa_rank_ligands(
+    "protein.pdb",
+    [("aspirin", "asp_docked.pdbqt"),
+     ("ibuprofen", "ibu_docked.pdbqt"),
+     ("paracetamol", "par_docked.pdbqt")]
+)
+
+for r in results:
+    print(f"{os.path.basename(r.ligand):20s}  ΔG = {r.delta_g_bind:+.2f}")
+```
+
+### 技术说明
+
+- **实现方式**：基于 RDKit + 自定义 AMBER/GAFF 力场参数，无需 AmberTools/OpenMM
+- **精度**：相对排序可靠（趋势正确），绝对值可能有 2-5 kcal/mol 偏差
+- **Clash 检测**：如果 vdW 能量 > 1000 kcal/mol，会自动警告原子重叠
+- **电荷**：配体从 PDBQT 读取 Gasteiger 电荷；受体自动计算 Gasteiger 电荷
+- **时间**：2690 原子蛋白 + 14 原子配体 ≈ 3-5 秒（不含 SASA）；含 SASA ≈ 15-30 秒
+
+### 局限性
+
+- 简化 GB 模型（Still），非完整 OBC2
+- 无熵校正（-TΔS 未计算）
+- 对于严重 clash 的 pose，结果不可靠（会警告）
+- 如需发表级绝对能量，建议使用 AmberTools MMPBSA.py
+
+---
+
+## MM/PBSA — 对接后结合自由能重评分（OBC2 + Interaction Entropy）
+
+对接完成后，Vina 的打分函数给出的是结合亲和力的近似值。MM/PBSA（分子力学/广义玻恩表面积）提供更精细的能量分解，可以：
+
+1. **相对比较**不同配体的结合强度排序
+2. **能量分解**识别对结合贡献最大的关键残基（hot-spot residues）
+3. **论文数据**提供 ΔG_bind、静电能、范德华能、溶剂化能、熵校正的分解表格
+
+### 技术特点
+
+- **OBC2 GB 模型**：基于原子深度的 Born 半径校正（Onufriev et al. 2004）
+- **Interaction Entropy**：经验熵校正（基于可旋转键数）
+- **SASA 非极性溶剂化**：Shrake-Rupley 算法，默认开启
+- **自动过滤**：跳过 linker / 水分子 / 结晶添加剂
+
+### 快速使用
+
+```python
+from autodock import compute_mmpbsa
+
+# 基础用法（OBC2 + SASA + 经验熵校正）
+result = compute_mmpbsa(
+    receptor_pdb="6LU7.pdb",
+    ligand_pdbqt="nirmatrelvir_docked.pdbqt",
+    decomp=True,        # 启用残基级能量分解
+    compute_sasa=True,  # 包含非极性溶剂化能
+)
+
+print(result.summary())
+# MM/GBSA Binding Free Energy: -53.64 kcal/mol
+#   Gas-phase interaction:      -15.68 kcal/mol
+#     Coulomb:                  +15.16
+#     van der Waals:            -30.84
+#   Solvation correction:       -54.46 kcal/mol
+#     Polar (GB/OBC2):        -54.46
+#     Non-polar (SA):           -0.00
+#   Entropy correction:         +16.50 kcal/mol
+# ...
+```
+
+### 输出字段
+
+| 字段 | 说明 | 用途 |
+|------|------|------|
+| `delta_g_bind` | 总结合自由能 ΔG_bind (kcal/mol) | 配体排序 |
+| `delta_e_elec` | 库仑静电能 | 盐桥/电荷相互作用 |
+| `delta_e_vdw` | Lennard-Jones 范德华能 | 疏水口袋匹配 |
+| `delta_g_gb` | OBC2 极性溶剂化能 | 溶剂对电荷的屏蔽 |
+| `delta_g_sa` | SASA 非极性溶剂化能 | 疏水效应 |
+| `t_delta_s` | -TΔS 熵校正 | 构象自由度惩罚 |
+| `per_residue` | 每个残基的能量贡献 | 识别关键残基 |
+
+### 多配体排序
+
+```python
+from autodock import mmpbsa_rank_ligands
+
+results = mmpbsa_rank_ligands(
+    "protein.pdb",
+    [("aspirin", "asp_docked.pdbqt"),
+     ("ibuprofen", "ibu_docked.pdbqt")]
+)
+
+for r in results:
+    print(f"{os.path.basename(r.ligand):20s}  ΔG = {r.delta_g_bind:+.2f}")
+```
+
+### 高级参数
+
+```python
+# 关闭 SASA 加速（大体系）
+result = compute_mmpbsa(..., compute_sasa=False)
+
+# 使用简化 Still GB 模型（更快，精度略低）
+result = compute_mmpbsa(..., use_obc2=False)
+
+# 提供多个 poses 进行严格的 Interaction Entropy
+result = compute_mmpbsa(..., poses_pdbqt=["pose1.pdbqt", "pose2.pdbqt", ...])
+```
+
+### 精度说明
+
+| 场景 | 适用性 |
+|------|--------|
+| 配体相对比较排序 | ✅ 可靠 |
+| 残基贡献趋势分析 | ✅ 可靠 |
+| 绝对 ΔG 数值 | ⚠️ 可能有 2-5 kcal/mol 偏差（无 MD 采样）|
+| 严重 clash pose | ❌ 不可靠（会警告）|
+
+### 局限性
+
+- 简化 OBC2（原子深度校正，非完整 CFA 积分）
+- 熵校正使用经验公式（无 MD 构象系综）
+- 如需发表级绝对能量，建议使用 AmberTools MMPBSA.py
+
+---
+
 ## 一、获取蛋白质结构
 
 > ⚠️ **推荐：优先使用实验 PDB 结构，实验结构不可用时再 fallback 到 AlphaFold。**
