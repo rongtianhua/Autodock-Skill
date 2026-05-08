@@ -1,0 +1,61 @@
+# ============================================================
+# Autodock Virtual Screening Configuration
+# Copy this file and customize for your project
+# ============================================================
+#
+# Quick start:
+#   1. Copy this template: cp docking_config.template.yml docking_config.yml
+#   2. Edit docking_config.yml with your project settings
+#   3. Run: snakemake --cores 4
+#
+# Snakemake tips:
+#   snakemake --cores 4 --dryrun     # show plan
+#   snakemake --cores 4 --unlock     # unlock after failure
+#   snakemake --cores 8 -p           # run with 8 cores, print shell commands
+#   snakemake --forcerun render_2d    # re-run only the rendering step
+# ============================================================
+
+# ── Receptor ──────────────────────────────────────────────────
+receptor:
+  id: "6LU7"               # PDB ID (4-char), UniProt ID, or file path
+  source: "pdb"            # "pdb" | "alphafold" | "swissmodel" | "file"
+
+# ── Ligand Library ───────────────────────────────────────────
+ligand_library:
+  source: "csv"            # "csv" (only CSV supported in this workflow)
+  path: "ligands.csv"      # Path to ligand CSV file
+  smiles_column: "smiles"  # Column name for SMILES strings
+  name_column: "compound"  # Column name for compound names/IDs
+  max_count: 100           # Maximum number of ligands to dock (0 = all)
+
+# Example ligands.csv:
+#   compound,smiles
+#   aspirin,CC(=O)OC1=CC=CC=C1C(=O)O
+#   caffeine,CN1C=NC2=C1C(=O)N(C(=O)N2C)C
+#   ibuprofen,CC(C)Cc1ccc(cc1)C(C)C(=O)O
+
+# ── Docking Parameters ────────────────────────────────────────
+docking:
+  center: [10.5, 20.3, -5.2]   # Binding site center (x, y, z) in Angstroms
+  box_size: [20, 20, 20]        # Search box dimensions (sx, sy, sz) in Angstroms
+  exhaustiveness: 32             # Search thoroughness: 8 (fast) / 16 (normal) / 32 (publication) / 64 (exhaustive)
+  n_poses: 10                   # Number of binding poses to output per ligand
+  seed: null                    # Random seed for reproducibility (null = random each run)
+
+# ── Post-Dock Analysis ────────────────────────────────────────
+post_dock:
+  mmpbsa: false                # Run MM/PBSA binding free energy calculation (slow)
+  mmpbsa_method: "gb"          # "gb" (fast, Generalized Born) | "pb" (accurate, Poisson-Boltzmann)
+  amber_protocol: "quick"       # "quick" | "short" | "medium" | "full" (only if method includes amber)
+  render_2d: true               # Generate 2D interaction diagrams for top-N ligands
+  render_3d: false              # Generate 3D PyMOL scenes (slow for many ligands)
+  top_n: 20                    # Number of top-ranked ligands for post-dock analysis
+
+# ── Output ────────────────────────────────────────────────────
+# All output goes into the `results/` directory (relative to Snakefile location)
+#   results/docking_results.csv     — raw docking scores
+#   results/docking_summary.csv     — enriched with MMPBSA if enabled
+#   results/summary_report.html     — HTML report
+#   results/{compound}_best.pdbqt   — best pose per ligand
+#   results/{compound}_2d.png       — 2D interaction diagram
+#   results/{compound}_mmpbsa.csv  — MM/PBSA result per ligand

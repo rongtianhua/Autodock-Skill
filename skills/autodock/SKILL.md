@@ -466,11 +466,9 @@ render_interactions_2d(
 
 ## MM/PBSA — 对接后结合自由能重评分
 
-对接完成后，Vina 的打分函数给出的是结合亲和力的近似值。MM/PBSA（分子力学/泊松-玻尔兹曼表面积）提供更精细的能量分解，可以：
-
-1. **相对比较**不同配体的结合强度排序
-2. **能量分解**识别对结合贡献最大的关键残基（hot-spot residues）
-3. **论文数据**提供 ΔG_bind、静电能、范德华能、溶剂化能的分解表格
+> ⚠️ **这是一个简化的 MM/GBSA 实现，用于相对排序和热点残基识别。不适用于发表级绝对 ΔG 值。**
+>
+> 精度：与实验值相比可能有 ±2–5 kcal/mol 偏差。如需发表级绝对结合自由能，请使用 AmberTools MMPBSA.py。
 
 ### 快速使用
 
@@ -538,6 +536,10 @@ for r in results:
 ## MM/PBSA — 对接后结合自由能重评分（OBC2 + Interaction Entropy）
 
 对接完成后，Vina 的打分函数给出的是结合亲和力的近似值。MM/PBSA（分子力学/广义玻恩表面积）提供更精细的能量分解，可以：
+
+> ⚠️ **这是一个简化的 MM/GBSA 实现，用于相对排序和热点残基识别。不适用于发表级绝对 ΔG 值。**
+>
+> 精度：与实验值相比可能有 ±2–5 kcal/mol 偏差。如需发表级绝对结合自由能，请使用 AmberTools MMPBSA.py。
 
 1. **相对比较**不同配体的结合强度排序
 2. **能量分解**识别对结合贡献最大的关键残基（hot-spot residues）
@@ -629,6 +631,130 @@ result = compute_mmpbsa(..., poses_pdbqt=["pose1.pdbqt", "pose2.pdbqt", ...])
 - 简化 OBC2（原子深度校正，非完整 CFA 积分）
 - 熵校正使用经验公式（无 MD 构象系综）
 - 如需发表级绝对能量，建议使用 AmberTools MMPBSA.py
+
+---
+
+## MM/PBSA — 发表级 AmberTools 分子动力学
+
+对接后结合自由能的**发表级**计算，基于 AmberTools 完整 MD 模拟 + MMPBSA.py。
+
+> **精度：** ±0.5–1.5 kcal/mol vs 实验值（需 10ns+ MD 采样）
+> **运行时间：** 5 分钟（仅能量最小化）→ 16+ 小时（100ns 生产模拟）
+
+### 环境要求
+
+**必须激活 autodock-amber 环境：**
+
+```bash
+conda activate autodock-amber
+```
+
+### 一键调用 API
+
+```python
+from autodock import compute_mmpbsa
+
+# 发表级计算（MD + MMPBSA）
+result = compute_mmpbsa(
+    receptor_pdb="6LU7.pdb",
+    ligand_pdbqt="docked.pdbqt",
+    method="amber",           # 关键：启用 AmberTools 模式
+    amber_protocol="short",   # 模拟协议
+    amber_method="gb",        # 溶剂化方法 'gb' (快) | 'pb' (准)
+    use_gpu=False,            # GPU 加速（5-10x 提速）
+    decomp=True,              # 残基能量分解
+)
+
+print(result.summary())
+print(f"ΔG_bind = {result.delta_g_bind:.2f} kcal/mol")
+print(f"发表级合格？ {result.is_publication_grade}")
+```
+
+### 模拟协议选择
+
+| protocol | 内容 | 运行时间 | 精度 | 用途 |
+|----------|------|----------|------|------|
+| `quick` | 仅能量最小化（2000 步） | 5–10 分钟 | 低 | 拓扑验证、快速筛选 |
+| `short` | 最小化 → 50ps 升温 → 1ns NVT | 30–60 分钟 | 中 | 方法验证、构象排序 |
+| `medium` | 最小化 → 升温 → 10ns NPT | 2–4 小时 | 好 | 发表初算结果 |
+| `full` | 最小化 → 升温 → 100ns NPT | 8–16 小时 | 优秀 | 发表最终结果 |
+
+### 分步调用（更灵活）
+
+```python
+from autodock import prepare_amber_topology, run_amber_md, run_mmpbsa_amber
+
+# 步骤 1：构建拓扑
+topo = prepare_amber_topology(
+    receptor_pdb="6LU7.pdb",
+    ligand_pdbqt="docked.pdbqt",
+    output_dir="amber_topology",
+)
+
+# 步骤 2：运行 MD 模拟
+traj = run_amber_md(
+    prmtop=topo['complex_prmtop'],
+    rst7=topo['complex_rst7'],
+    output_prefix="amber_md/md",
+    protocol="medium",
+)
+
+# 步骤 3：运行 MMPBSA 计算
+result = run_mmpbsa_amber(
+    complex_prmtop=topo['complex_prmtop'],
+    receptor_prmtop=topo['receptor_prmtop'],
+    ligand_prmtop=topo['ligand_prmtop'],
+    trajectory=traj,
+    output_prefix="amber_mmpbsa/mmpbsa",
+    method="pb",  # Poisson-Boltzmann（更准确）
+    interval=10,  # 每 10 帧采样一次，提速 10x
+)
+```
+
+### 能量组分解读
+
+```python
+print(f"总结合自由能 ΔG: {result.delta_g_bind:.2f} kcal/mol")
+print(f"  范德华作用: {result.delta_e_vdw:.2f}")
+print(f"  静电作用: {result.delta_e_elec:.2f}")
+print(f"  GB/PB 去溶剂化: {result.delta_g_gb:.2f}")
+print(f"  SASA 非极性: {result.delta_g_sa:.2f}")
+
+# 热点残基分析
+print("\n关键贡献残基：")
+for res, energy in sorted(result.per_residue.items(), key=lambda x: x[1])[:5]:
+    if energy < -1.0:
+        print(f"  {res}: {energy:+.2f} kcal/mol")
+```
+
+### 典型结合自由能范围
+
+| ΔG (kcal/mol) | Kd (μM) | 解释 |
+|---------------|---------|------|
+| -5 | ~200 | 弱结合 |
+| -8 | ~1.5 | 片段级别 |
+| -10 | ~0.05 | 良好先导物 |
+| -12 | ~0.0015 | 药物级别 |
+| -15 | ~8e-6 | 极强结合 |
+
+### 发表结果检查清单
+
+1. ✅ 使用 `protocol="medium"` 或 `"full"`（`quick`/`short` 仅用于筛选）
+2. ✅ 运行 3+ 次独立重复，报告均值 ± 标准误
+3. ✅ 建议使用 `method="pb"`（Poisson-Boltzmann）做最终计算
+4. ✅ 报告所有能量组分，不要只报 ΔG_bind
+5. ✅ 提供轨迹收敛性分析（RMSD、能量波动）
+
+### 详细文档
+
+完整 AmberTools 工作流参考：`AMBER_WORKFLOW_REFERENCE.md`
+
+包含：
+- 拓扑构建内部步骤
+- MD 参数细节（Langevin 温控、Monte Carlo 压控）
+- 常见错误与解决方案
+- GPU 加速指南
+- AmberTools 命令行直接调用
 
 ---
 
@@ -924,6 +1050,112 @@ composite_summary(
     panel_titles=["A. Protein-Ligand Complex", "B. Binding Pocket", "C. Interactions"],
     figure_title="Molecular Docking: Urolithin A ↔ METTL8 (Q9H825)",
 )
+```
+
+---
+
+## SnakeMake 虚拟筛选工作流
+
+> **适用场景：** 大规模虚拟筛选（>100 个化合物）自动化Pipeline。
+> 需要额外安装：`pip install snakemake`
+
+### 核心思想
+
+SnakeMake 工作流将虚拟筛选拆分为 5 个规则：
+
+| 规则 | 输入 | 输出 | 说明 |
+|------|------|------|------|
+| `fetch_receptor` | PDB ID | `structures/{id}.pdb` | 下载蛋白质结构 |
+| `prepare_receptor` | `.pdb` | `prepared/{id}.pdbqt` | 制备受体 PDBQT |
+| `run_virtual_screen` | `.pdbqt` | `results/docking_results.csv` | 批量对接 |
+| `post_dock_analysis` | docking CSV | MMPBSA CSV + 2D PNG | 后处理分析 |
+| `generate_report` | 结果文件 | `summary_report.html` | 生成 HTML 报告 |
+
+### 快速开始
+
+```bash
+# 1. 复制配置模板和Snakefile
+cp docking_config.template.yml docking_config.yml
+cp $(python -c "import autodock; import os; print(os.path.dirname(autodock.__file__))")/Snakefile .
+
+# 2. 编辑 docking_config.yml（设置受体、化合物库、对接参数）
+
+# 3. 预览执行计划（不实际运行）
+snakemake --cores 4 --dryrun
+
+# 4. 执行全流程
+snakemake --cores 4
+
+# 5. 解锁（如果上次运行崩溃）
+snakemake --cores 4 --unlock
+```
+
+# 2. 编辑 docking_config.yml（设置受体、化合物库、对接参数）
+
+# 3. 预览执行计划（不实际运行）
+snakemake --cores 4 --dryrun
+
+# 4. 执行全流程
+snakemake --cores 4
+
+# 5. 解锁（如果上次运行崩溃）
+snakemake --cores 4 --unlock
+```
+
+### 配置文件示例（docking_config.yml）
+
+```yaml
+receptor:
+  id: "6LU7"               # PDB ID
+  source: "pdb"
+
+ligand_library:
+  source: "csv"
+  path: "ligands.csv"      # 你的化合物库 CSV
+  smiles_column: "smiles"
+  name_column: "compound"
+  max_count: 100           # 最多对接多少个化合物
+
+docking:
+  center: [10.5, 20.3, -5.2]
+  box_size: [20, 20, 20]
+  exhaustiveness: 32        # 发表级精度
+  n_poses: 10
+  seed: null                # null=每次随机，固定数字=可重复
+
+post_dock:
+  mmpbsa: false             # 是否计算 MM/PBSA（慢）
+  render_2d: true           # 是否渲染 2D 相互作用图
+  top_n: 20                 # 后处理分析的 Top-N 化合物
+```
+
+### CLI 集成
+
+```bash
+# 通过 autodock CLI 调用 SnakeMake 工作流
+python -m autodock workflow docking_config.yml --cores 4
+python -m autodock workflow docking_config.yml --dry-run
+python -m autodock workflow docking_config.yml --force
+```
+
+### 并行执行
+
+Snakemake 自动管理 DAG：
+- `fetch_receptor` → `prepare_receptor` → `run_virtual_screen` 串行执行
+- `post_dock_analysis` 等待 `run_virtual_screen` 完成后执行
+- `generate_report` 等待所有分析完成后执行
+- `virtual_screen` 内部串行执行（Vina 是 CPU-bound，不受 GIL 加速）
+
+### 输出文件
+
+```
+results/
+  docking_results.csv      # 原始对接得分
+  docking_summary.csv       # MMPBSA 富集版（如启用）
+  summary_report.html       # HTML 可视化报告
+  {compound}_best.pdbqt    # 每个化合物的最佳 pose
+  {compound}_2d.png         # 2D 相互作用图（如启用）
+  mmpbsa_results.csv        # MM/PBSA 结果（如启用）
 ```
 
 ---

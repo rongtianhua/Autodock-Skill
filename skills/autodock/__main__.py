@@ -323,6 +323,72 @@ def cmd_validate(args):
     print(f"   Result:    {'✅ PASSED' if passed else '⚠️  FAILED'} (threshold: {result['threshold']} Å)")
 
 
+def cmd_workflow(args):
+    """Run SnakeMake virtual screening workflow from YAML config."""
+    import yaml
+    import subprocess
+
+    # Find snakemake — prefer the one in the autodock313 conda env
+    import os as _os
+    conda_prefix = _os.environ.get(
+        'CONDA_PREFIX',
+        '/opt/homebrew/Caskroom/miniconda/base/envs/autodock313'
+    )
+    snakemake_exe = _os.path.join(conda_prefix, 'bin', 'snakemake')
+    if not _os.path.exists(snakemake_exe):
+        # Fallback to PATH
+        snakemake_exe = 'snakemake'
+
+    config_path = Path(args.config).resolve()
+    if not config_path.exists():
+        print(f"❌ Config file not found: {config_path}")
+        sys.exit(1)
+
+    # Load and validate config
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
+
+    ligand_csv = cfg['ligand_library']['path']
+    if not Path(ligand_csv).exists():
+        print(f"❌ Ligand CSV not found: {ligand_csv}")
+        sys.exit(1)
+
+    print(f"\n{'='*50}")
+    print(f"🧬 Autodock SnakeMake Virtual Screening")
+    print(f"{'='*50}")
+    print(f"  Config:   {config_path}")
+    print(f"  Receptor: {cfg['receptor']['id']}")
+    print(f"  Library:  {ligand_csv}")
+    print(f"  Box:      center={cfg['docking']['center']} "
+          f"size={cfg['docking']['box_size']}")
+    print(f"  Exhaust:  {cfg['docking'].get('exhaustiveness', 32)}")
+    print(f"  MMPBSA:   {cfg['post_dock'].get('mmpbsa', False)}")
+    print(f"{'='*50}\n")
+
+    # Change to Snakefile directory
+    snakefile_dir = config_path.parent
+    _os.chdir(snakefile_dir)
+
+    snakemake_cmd = [
+        snakemake_exe,
+        '--snakefile', str(snakefile_dir / 'Snakefile'),
+        '--configfile', str(config_path),
+        '--cores', str(args.cores),
+    ]
+    if args.dry_run:
+        snakemake_cmd.append('--dryrun')
+    if args.unlock:
+        snakemake_cmd.append('--unlock')
+    if args.force:
+        snakemake_cmd.extend(['--forcerun', 'all'])
+    if args.verbose:
+        snakemake_cmd.append('-p')
+
+    print(f"Running: {' '.join(snakemake_cmd)}\n")
+    result = subprocess.run(snakemake_cmd)
+    sys.exit(result.returncode)
+
+
 def cmd_run(args):
     """Full end-to-end workflow: fetch → prepare → dock → visualize"""
     outdir = Path(args.outdir or "./docking_results")
@@ -601,6 +667,19 @@ def main():
                        help='Maximum results (default: 10)')
     p_bind.set_defaults(func=cmd_bindingdb)
 
+    # workflow (SnakeMake virtual screening)
+    p_wf = subparsers.add_parser('workflow', help='Run SnakeMake virtual screening workflow')
+    p_wf.add_argument('config', help='Path to YAML configuration file (docking_config.yml)')
+    p_wf.add_argument('--cores', type=int, default=4,
+                     help='Number of parallel cores (default: 4)')
+    p_wf.add_argument('--dry-run', action='store_true',
+                     help='Show planned execution without running')
+    p_wf.add_argument('--unlock', action='store_true',
+                     help='Unlock workflow directory after failure')
+    p_wf.add_argument('--force', action='store_true',
+                     help='Force re-run of all rules')
+    p_wf.set_defaults(func=cmd_workflow)
+
     # run (full workflow)
     p_run = subparsers.add_parser('run', help='Full workflow: fetch → prepare → dock → visualize')
     p_run.add_argument('--receptor', required=True, help='PDB ID of protein (e.g. 6LU7)')
@@ -620,7 +699,6 @@ def main():
 
     # Optional file logging
     if args.log_file:
-        import logging
         fh = logging.FileHandler(args.log_file, mode='a')
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(logging.Formatter(

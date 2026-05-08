@@ -14,3 +14,11 @@ htmlcov/
 *.egg-info/
 dist/
 build/
+*.pyc
+__pycache__/
+.snakemake/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+*.log

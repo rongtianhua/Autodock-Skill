@@ -12,29 +12,45 @@ import signal
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 
-"""
-Autodock Molecular Docking Module
-=================================
-Complete molecular docking workflow for AutoDock Vina + PyMOL rendering.
 
-Environment: autodock313 (Python 3.13)
-  conda activate autodock313
+# ─── Exception hierarchy ───────────────────────────────────────────────────────
 
-Key replacements vs. openbabel-based workflow:
-  - Receptor PDB → PDBQT: meeko.MoleculePreparation
-  - Ligand SMILES → PDBQT: RDKit ETKDGv3 + meeko
-  - 3D Rendering: pymol.cmd.png() (direct Python API)
+class DockingError(Exception):
+    """Base exception for all autodock errors."""
+    pass
 
-PyMOL Visualization — based on comprehensive research (2026-04-25):
-  - PyMOL Official Docs + Leipzig University Tutorial
-  - Oxford Protein Informatics Group (OPIG) best practices
-  - CB-Dock2 paper (PMC9252749)
-  - APBS Electrostatics Plugin docs
-  Key parameters: dash_gap=0.4/dash_radius=0.05（Leipzig标准），
-  ligand C=gold, pocket C=bluewhite, surface transparency=0.25
 
-Author: PrimeClaw (OpenClaw)
-"""
+class StructureFetchError(DockingError):
+    """Failed to fetch protein/ligand structure from remote source."""
+    pass
+
+
+class PreparationError(DockingError):
+    """Failed to prepare receptor or ligand (PDBQT generation failed)."""
+    pass
+
+
+class DockingCalculationError(DockingError):
+    """AutoDock Vina docking failed (no poses, timeout, etc.)."""
+    pass
+
+
+class VisualizationError(DockingError):
+    """Rendering/interaction detection failed."""
+    pass
+
+
+class ValidationError(DockingError):
+    """Redocking validation or clash/RMSD computation failed."""
+    pass
+
+
+class DataSourceError(DockingError):
+    """External database query failed (BindingDB, ZINC22, etc.)."""
+    pass
+
+
+# Autodock logger — can be silenced via autodock_logger.setLevel(logging.WARNING)
 
 import os
 import tempfile
@@ -128,6 +144,7 @@ def _detect_receptor_source(pdb_path: str) -> str | None:
     if 'EXPDTA  X-RAY' in text or 'EXPDTA  SYNCHROTRON' in text:
         return 'PDB'
     return None
+
 
 @dataclass(slots=True)
 class DockingResult:

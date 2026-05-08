@@ -23,6 +23,8 @@ Environment: conda activate autodock313
 from autodock._core import (
     autodock_logger,
     DockingResult, build_docking_result,
+    DockingError, StructureFetchError, PreparationError,
+    DockingCalculationError, VisualizationError, ValidationError, DataSourceError,
     _HAVE_PYMOL, _HAVE_VINA, _HAVE_RDKIT, _HAVE_PLIP, _HAVE_MEEKO, _HAVE_OBABEL,
     _detect_receptor_source, _RECEPTOR_SOURCE_LABELS,
 )
@@ -77,7 +79,7 @@ from autodock._interactions import (
 # ─── 3D Rendering ──────────────────────────────────────────────────────────────
 from autodock._rendering_3d import (
     render_scene, render_complex, render_pocket, render_interactions_pymol,
-    composite_summary,
+    composite_summary, render_comparison,
 )
 
 # ─── LigPlot ─────────────────────────────────────────────────────────────────────
@@ -90,6 +92,16 @@ from autodock._ligplot import (
 from autodock._mmpbsa import (
     compute_mmpbsa, mmpbsa_rank_ligands,
     MMPBSAResult,
+)
+
+# ─── AmberTools MM/PBSA (publication-grade) ───────────────────────────────────
+from autodock._mmpbsa_amber import (
+    prepare_amber_topology,
+    run_amber_md,
+    run_mmpbsa_amber,
+    compute_mmpbsa_amber,
+    AmberMMPBSAResult,
+    _HAVE_AMBER,
 )
 
 # ─── ADMET ─────────────────────────────────────────────────────────────────────
@@ -130,7 +142,7 @@ __all__ = [
     'render_scene',
     # Specialized renderers
     'render_complex', 'render_pocket', 'render_interactions_pymol',
-    'composite_summary',
+    'composite_summary', 'render_comparison',
     # Structure retrieval
     'fetch_protein', 'fetch_protein_pdb',
     'fetch_protein_alphafold', 'fetch_protein_swissmodel', 'fetch_protein_pdb_redo',
@@ -156,4 +168,7 @@ __all__ = [
     'clear_cache', 'get_cache_info',
     # Core types
     'DockingResult', 'build_docking_result',
+    # Exceptions
+    'DockingError', 'StructureFetchError', 'PreparationError',
+    'DockingCalculationError', 'VisualizationError', 'ValidationError', 'DataSourceError',
 ]

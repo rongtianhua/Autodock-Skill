@@ -1,0 +1,194 @@
+# Snakefile — Autodock Virtual Screening Workflow
+# ============================================================
+# Requires: snakemake (pip install snakemake)
+#   pip install snakemake
+# Usage:
+#   snakemake --cores 4 --dryrun   # show plan
+#   snakemake --cores 4            # run
+#   snakemake --cores 4 --unlock   # unlock after crash
+#
+# Environment: conda activate autodock313
+
+from snakemake.io import protected, expand
+import os
+import pandas as pd
+
+PYTHON = "/opt/homebrew/Caskroom/miniconda/base/envs/autodock313/bin/python"
+SKILL_DIR = "/Users/allenrong/.openclaw/workspace/skills/autodock"
+
+# ── Load configuration (Snakemake-managed) ───────────────────────────────────
+configfile: "docking_config.yml"
+
+RECEPTOR_ID    = config["receptor"]["id"]
+LIGAND_CSV     = config["ligand_library"]["path"]
+NAME_COL       = config["ligand_library"].get("name_column", "compound")
+MAX_LIGANDS    = config["ligand_library"].get("max_count", 100)
+
+CENTER         = tuple(config["docking"]["center"])
+BOX_SIZE       = tuple(config["docking"]["box_size"])
+EXHAUSTIVENESS = config["docking"].get("exhaustiveness", 32)
+N_POSES        = config["docking"].get("n_poses", 10)
+SEED           = config["docking"].get("seed", None)
+
+RUN_MMPBSA     = config["post_dock"].get("mmpbsa", False)
+MMPBSA_METHOD  = config["post_dock"].get("mmpbsa_method", "gb")
+AMBER_PROTO    = config["post_dock"].get("amber_protocol", "quick")
+RENDER_2D      = config["post_dock"].get("render_2d", True)
+TOP_N          = int(config["post_dock"].get("top_n", 20))
+
+OUT_DIR        = "results"
+
+# ── Discover ligands from CSV (at parse time for DAG construction) ─────────────
+_ligand_df     = pd.read_csv(LIGAND_CSV).head(MAX_LIGANDS)
+LIGAND_NAMES   = _ligand_df[NAME_COL].astype(str).tolist()
+TOP_NAMES      = LIGAND_NAMES[:TOP_N]
+
+# ── Output paths ──────────────────────────────────────────────────────────────
+RECEPTOR_PDB   = f"structures/{RECEPTOR_ID}.pdb"
+RECEPTOR_PDBQT = f"prepared/{RECEPTOR_ID}.pdbqt"
+DOCKING_CSV    = f"{OUT_DIR}/docking_results.csv"
+FINAL_CSV      = f"{OUT_DIR}/docking_summary.csv"
+FINAL_HTML     = f"{OUT_DIR}/summary_report.html"
+MMPBSA_CSV     = f"{OUT_DIR}/mmpbsa_results.csv"
+
+
+# ── Rule: final outputs ───────────────────────────────────────────────────────
+rule all:
+    input:
+        FINAL_CSV,
+        FINAL_HTML,
+
+
+# ── 1. Fetch receptor PDB ────────────────────────────────────────────────────
+rule fetch_receptor:
+    output:
+        protected(RECEPTOR_PDB),
+    shell:
+        "{PYTHON} -m autodock fetch pdb {RECEPTOR_ID} -o structures/"
+
+
+# ── 2. Prepare receptor PDBQT ────────────────────────────────────────────────
+rule prepare_receptor:
+    input:
+        RECEPTOR_PDB,
+    output:
+        protected(RECEPTOR_PDBQT),
+    shell:
+        "{PYTHON} -m autodock prepare-receptor {input} {output}"
+
+
+# ── 3. Main docking batch ────────────────────────────────────────────────────
+rule run_virtual_screen:
+    input:
+        RECEPTOR_PDBQT,
+    output:
+        DOCKING_CSV,
+    params:
+        center    = " ".join(map(str, CENTER)),
+        box_size  = " ".join(map(str, BOX_SIZE)),
+        exhaust   = EXHAUSTIVENESS,
+        n_poses   = N_POSES,
+        seed_flag = f"--seed {SEED}" if SEED else "",
+    shell:
+        "{PYTHON} -m autodock virtual-screen "
+        "{input} {LIGAND_CSV} {output} "
+        "--center {params.center} --box-size {params.box_size} "
+        "--exhaustiveness {params.exhaust} --n-poses {params.n_poses} "
+        "{params.seed_flag}"
+
+
+# ── 4. Post-dock analysis (MMPBSA + 2D rendering) ─────────────────────────────
+# Uses a single rule that reads the docking CSV at runtime to discover pose files.
+# This avoids Snakemake wildcard issues with files only created at runtime.
+rule post_dock_analysis:
+    input:
+        docking_csv = DOCKING_CSV,
+        rec_pdb     = RECEPTOR_PDB,
+    output:
+        MMPBSA_CSV if RUN_MMPBSA else "/dev/null",
+    run:
+        import os, sys, subprocess
+        sys.path.insert(0, SKILL_DIR)
+
+        df = pd.read_csv(input.docking_csv)
+        top_df = df.head(TOP_N)
+
+        mmpbsa_rows = []
+
+        for _, row in top_df.iterrows():
+            compound = str(row["compound"])
+            pose_file = f"{OUT_DIR}/{compound}_best.pdbqt"
+
+            if not os.path.exists(pose_file):
+                print(f"[snakemake] Warning: pose file not found: {pose_file}")
+                continue
+
+            # ── MM/PBSA ────────────────────────────────────────────────────
+            if RUN_MMPBSA:
+                try:
+                    from autodock import compute_mmpbsa
+                    result = compute_mmpbsa(
+                        receptor_pdb    = input.rec_pdb,
+                        ligand_pdbqt    = pose_file,
+                        method          = MMPBSA_METHOD,
+                        amber_protocol  = AMBER_PROTO,
+                        decomp          = False,
+                        compute_sasa    = False,
+                    )
+                    row_dict = result.to_dataframe().iloc[0].to_dict()
+                    row_dict["compound"] = compound
+                    mmpbsa_rows.append(row_dict)
+                    print(f"[snakemake] MMPBSA: {compound} → ΔG={row_dict.get('delta_g_bind', 'N/A')}")
+                except Exception as e:
+                    print(f"[snakemake] MMPBSA failed for {compound}: {e}")
+
+            # ── 2D Interaction Diagram ───────────────────────────────────────
+            if RENDER_2D:
+                try:
+                    from autodock import detect_interactions_plip, render_interactions_2d
+                    intx, _ = detect_interactions_plip(input.rec_pdb, pose_file)
+                    out_png = f"{OUT_DIR}/{compound}_2d.png"
+                    render_interactions_2d(input.rec_pdb, pose_file, intx, out_png)
+                    print(f"[snakemake] 2D render: {compound} → {out_png}")
+                except Exception as e:
+                    print(f"[snakemake] 2D render failed for {compound}: {e}")
+
+        # Write MMPBSA aggregated results
+        if RUN_MMPBSA and mmpbsa_rows:
+            mmpbsa_df = pd.DataFrame(mmpbsa_rows)
+            cols = ["compound"] + [c for c in mmpbsa_df.columns if c != "compound"]
+            mmpbsa_df[cols].to_csv(output[0], index=False)
+        elif RUN_MMPBSA:
+            pd.DataFrame(columns=["compound", "delta_g_bind"]).to_csv(output[0], index=False)
+
+
+# ── 5. Generate HTML report ──────────────────────────────────────────────────
+rule generate_report:
+    input:
+        docking_csv = DOCKING_CSV,
+        post_done  = MMPBSA_CSV if RUN_MMPBSA else DOCKING_CSV,
+    output:
+        FINAL_CSV,
+        FINAL_HTML,
+    run:
+        import sys, os
+        sys.path.insert(0, SKILL_DIR)
+        from autodock._workflow_report import generate_html_report
+        import pandas as pd
+
+        df = pd.read_csv(input.docking_csv)
+
+        if RUN_MMPBSA and input.post_done != DOCKING_CSV and os.path.exists(input.post_done):
+            mmpbsa_df = pd.read_csv(input.post_done)
+            df = df.merge(
+                mmpbsa_df[["compound", "delta_g_bind"]].rename(
+                    columns={"delta_g_bind": "mmpbsa_delta_g"}),
+                on="compound", how="left")
+
+        df.to_csv(output[0], index=False)
+        generate_html_report(df, output[1], top_n=TOP_N)
+
+
+# ── Wildcard constraints ─────────────────────────────────────────────────────
+wildcard_constraints:
+    name = "[^/]+"

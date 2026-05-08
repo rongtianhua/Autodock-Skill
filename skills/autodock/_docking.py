@@ -3,6 +3,8 @@ Autodock Docking Module
 ========================
 Molecular docking: Vina single/multi-conformer docking and virtual screening.
 """
+from __future__ import annotations
+
 import os
 import tempfile
 import numpy as np
@@ -28,9 +30,11 @@ if _HAVE_MEEKO:
     from meeko.polymer import PolymerCreationError
     from meeko import ResidueChemTemplates
 
-def find_binding_site(receptor_pdb: str,
-                     ligand_pdb: str = None,
-                     padding: float = 5.0) -> tuple:
+def find_binding_site(
+    receptor_pdb: str,
+    ligand_pdb: str | None = None,
+    padding: float = 5.0,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     """
     Define docking search box using fpocket (cavity detection).
 
@@ -72,16 +76,18 @@ def find_binding_site(receptor_pdb: str,
     return top['center'], top['box_size']
 
 
-def dock_ligand_multi_conformer(receptor_pdbqt: str,
-                                   conformer_pdbqts: list,
-                                   receptor_pdb: str = None,
-                                   ligand_pdb: str = None,
-                                   padding: float = 5.0,
-                                   max_pockets: int = 3,
-                                   exhaustiveness: int = 32,
-                                   n_poses: int = 10,
-                                   seed: int | None = None,
-                                   output_dir: str = None) -> dict:
+def dock_ligand_multi_conformer(
+    receptor_pdbqt: str,
+    conformer_pdbqts: list[str],
+    receptor_pdb: str | None = None,
+    ligand_pdb: str | None = None,
+    padding: float = 5.0,
+    max_pockets: int = 3,
+    exhaustiveness: int = 32,
+    n_poses: int = 10,
+    seed: int | None = None,
+    output_dir: str | None = None,
+) -> dict[str, float | str | list[tuple[float, str]] | int | dict]:
     """
     Dock multiple ligand conformers and return the globally best poses.
 
@@ -195,18 +201,20 @@ def dock_ligand_multi_conformer(receptor_pdbqt: str,
     }
 
 
-def dock_ligand_multi(receptor_pdbqt: str,
-                     ligand_pdbqt: str,
-                     receptor_pdb: str = None,
-                     ligand_pdb: str = None,
-                     padding: float = 5.0,
-                     max_pockets: int = 3,
-                     exhaustiveness: int = 32,
-                     n_poses: int = 10,
-                     receptor_pdb_for_analysis: str = None,
-                     include_interactions: bool = False,
-                     include_clash: bool = False,
-                     seed: int | None = None) -> tuple:
+def dock_ligand_multi(
+    receptor_pdbqt: str,
+    ligand_pdbqt: str,
+    receptor_pdb: str | None = None,
+    ligand_pdb: str | None = None,
+    padding: float = 5.0,
+    max_pockets: int = 3,
+    exhaustiveness: int = 32,
+    n_poses: int = 10,
+    receptor_pdb_for_analysis: str | None = None,
+    include_interactions: bool = False,
+    include_clash: bool = False,
+    seed: int | None = None,
+) -> tuple[np.ndarray, list[str], dict, list[dict]] | tuple[np.ndarray, list[str], dict]:
     """
     Dock a ligand into a protein, automatically trying multiple binding pockets.
 
@@ -390,19 +398,21 @@ def dock_ligand_multi(receptor_pdbqt: str,
     return best_result['energies'], best_result['poses'], best_result['pocket']
 
 
-def dock_ligand(receptor_pdbqt: str,
-                ligand_pdbqt: str,
-                center: tuple,
-                box_size: tuple,
-                exhaustiveness: int = 32,
-                n_poses: int = 10,
-                receptor_pdb: str = None,
-                include_interactions: bool = False,
-                include_clash: bool = False,
-                output_dir: str = None,
-                return_structured: bool = False,
-                timeout: int = 600,
-                seed: int | None = None) -> tuple:
+def dock_ligand(
+    receptor_pdbqt: str,
+    ligand_pdbqt: str,
+    center: tuple[float, float, float],
+    box_size: tuple[float, float, float],
+    exhaustiveness: int = 32,
+    n_poses: int = 10,
+    receptor_pdb: str | None = None,
+    include_interactions: bool = False,
+    include_clash: bool = False,
+    output_dir: str | None = None,
+    return_structured: bool = False,
+    timeout: int = 600,
+    seed: int | None = None,
+) -> tuple[np.ndarray, list[str], dict] | DockingResult | tuple[np.ndarray, list[str]]:
     """
     Dock a single ligand into a protein binding site (AutoDock Vina).
 
@@ -627,10 +637,11 @@ def dock_ligand(receptor_pdbqt: str,
     return energies, poses
 
 
-def virtual_screen(receptor_pdbqt: str,
-                  ligand_smiles_dict: dict,
-                  center: tuple,
-                  box_size: tuple,
+def virtual_screen(
+    receptor_pdbqt: str,
+    ligand_smiles_dict: dict[str, str],
+    center: tuple[float, float, float],
+    box_size: tuple[float, float, float],
                   output_dir: str = "./docking_results",
                   exhaustiveness: int = 32,
                   n_poses: int = 3,
@@ -1246,13 +1257,15 @@ def prepare_receptor_with_waters(pdb_file: str,
     return output_pdbqt
 
 
-def dock_single(receptor_pdb: str,
-               ligand_smiles_or_pdb: str,
-               output_dir: str = None,
-               exhaustiveness: int = 32,
-               receptor_pdbqt: str = None,
-               ligand_pdbqt: str = None,
-               seed: int | None = None) -> DockingResult:
+def dock_single(
+    receptor_pdb: str,
+    ligand_smiles_or_pdb: str,
+    output_dir: str | None = None,
+    exhaustiveness: int = 32,
+    receptor_pdbqt: str | None = None,
+    ligand_pdbqt: str | None = None,
+    seed: int | None = None,
+) -> DockingResult:
     """
     High-level single-ligand docking: fetch → prepare → find site → dock → analyze.
 
@@ -1414,15 +1427,17 @@ def dock_single(receptor_pdb: str,
 
 
 
-def screen_ligands(receptor_pdb: str,
-                   ligand_smiles_list: list = None,
-                   ligand_csv: str = None,
-                   output_dir: str = './screen_results',
-                   exhaustiveness: int = 16,
-                   n_workers: int = 4,
-                   min_affinity: float = None,
-                   max_clash: float = None,
-                   seed: int | None = None) -> tuple:
+def screen_ligands(
+    receptor_pdb: str,
+    ligand_smiles_list: list | None = None,
+    ligand_csv: str | None = None,
+    output_dir: str = './screen_results',
+    exhaustiveness: int = 16,
+    n_workers: int = 4,
+    min_affinity: float | None = None,
+    max_clash: float | None = None,
+    seed: int | None = None,
+) -> tuple[pd.DataFrame, list[DockingResult], str | None]:
     """
     Virtual screening of multiple ligands against a receptor.
 
@@ -1541,14 +1556,16 @@ def screen_ligands(receptor_pdb: str,
 
 
 
-def batch_docking(receptor_pdb_list: list,
-                  ligand_pdbqt_list: list,
-                  output_dir: str = './batch_docking',
-                  n_workers: int = 4,
-                  exhaustiveness: int = 8,
-                  center_dict: dict = None,
-                  box_size_dict: dict = None,
-                  seed: int | None = None) -> pd.DataFrame:
+def batch_docking(
+    receptor_pdb_list: list[str],
+    ligand_pdbqt_list: list[str],
+    output_dir: str = './batch_docking',
+    n_workers: int = 4,
+    exhaustiveness: int = 8,
+    center_dict: dict[str, tuple[float, float, float]] | None = None,
+    box_size_dict: dict[str, tuple[float, float, float]] | None = None,
+    seed: int | None = None,
+) -> pd.DataFrame:
     """
     Two-by-two batch docking: each receptor × each ligand.
 

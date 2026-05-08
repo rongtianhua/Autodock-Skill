@@ -1550,6 +1550,74 @@ def render_interactions_2d(receptor_pdb: str,
                 draw.text((lx, ly), res_label,
                           fill=(20, 20, 20, 230), font=font)
 
+        # ── Distance labels on interaction lines ───────────────────────────────
+        # Draw "2.55Å" at midpoint of each interaction line.
+        # Use a small font (10px) with slightly darker color than the line.
+        try:
+            font_dist = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 10)
+        except Exception:
+            font_dist = font
+
+        for interaction in interactions:
+            dist = interaction.get('distance')
+            if dist is None:
+                continue
+            # Find the corresponding dummy_info entry for this interaction
+            resn = interaction.get('resn', '')
+            resi = interaction.get('resi', '?')
+            chain = interaction.get('chain', '')
+            itype = interaction.get('type', 'Unknown')
+            # Match by (type, resn, resi, chain)
+            matched = None
+            for di in dummy_info:
+                d_type, d_resn, d_resi, d_chain = di[1], di[2].rstrip('.0123456789'), di[2], di[2]
+                # Parse res_label like "HIS41.A" or "ASP85"
+                import re as _re
+                m = _re.match(r'([A-Z]{3})(\d+)(?:\.(.))?', di[2])
+                if m:
+                    d_resn, d_resi_str, d_chain = m.group(1), m.group(2), m.group(3) or ''
+                else:
+                    d_resn, d_resi_str, d_chain = di[2], '', ''
+                if (d_resn == resn and
+                    d_resi_str == str(resi) and
+                    d_chain == str(chain)):
+                    matched = di
+                    break
+            if matched is None:
+                continue
+            didx, _, _, lig_idx = matched[0], matched[1], matched[2], matched[3]
+            # Get pixel coordinates of ligand atom and dummy atom
+            lig_pos_2d = conf.GetAtomPosition(lig_idx)
+            dum_pos_2d = conf.GetAtomPosition(didx)
+            lig_px = drawer.GetDrawCoords(Point2D(lig_pos_2d.x, lig_pos_2d.y))
+            dum_px = drawer.GetDrawCoords(Point2D(dum_pos_2d.x, dum_pos_2d.y))
+            # Midpoint
+            mid_x = (lig_px.x + dum_px.x) / 2.0
+            mid_y = (lig_px.y + dum_px.y) / 2.0
+            # Offset slightly perpendicular to the line direction to avoid overlap
+            dx = dum_px.x - lig_px.x
+            dy = dum_px.y - lig_px.y
+            length_sq = dx * dx + dy * dy
+            if length_sq > 0:
+                # Perpendicular offset: (-dy, dx) normalized
+                nx = -dy / (length_sq ** 0.5) * 4.0
+                ny = dx / (length_sq ** 0.5) * 4.0
+            else:
+                nx, ny = 4.0, -8.0
+            label_x = int(mid_x + nx)
+            label_y = int(mid_y + ny)
+            # Get line color (slightly darker for readability)
+            style = INTERACTION_STYLE.get(itype, {})
+            color = style.get('color', (0.5, 0.5, 0.5))
+            r = max(0, int(color[0] * 255) - 40)
+            g = max(0, int(color[1] * 255) - 40)
+            b = max(0, int(color[2] * 255) - 40)
+            label_text = f"{dist:.2f}Å"
+            # Clip to image bounds (approximate)
+            if 0 <= label_x < img.width - 40 and 0 <= label_y < img.height - 16:
+                draw.text((label_x, label_y), label_text,
+                          fill=(r, g, b, 230), font=font_dist)
+
         # ── 8. Composite and save ───────────────────────────────────────────
         bg = Image.new('RGBA', img.size, (255, 255, 255, 255))
         bg.paste(img, (0, 0), img if img.mode == 'RGBA' else None)

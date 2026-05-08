@@ -637,6 +637,206 @@ def composite_summary(panels: list,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# MULTI-LIGAND OVERLAY COMPARISON
+# ─────────────────────────────────────────────────────────────────────────────
+
+def render_comparison(
+    receptor_pdb: str,
+    ligand_entries: list[dict],
+    center: tuple[float, float, float],
+    output_png: str,
+    distance: float = 5.0,
+    width: int = 2400,
+    height: int = 1800,
+    dpi: int = 300,
+) -> bool:
+    """
+    Overlay multiple docked ligands on the same receptor pocket for comparison.
+
+    Each ligand is shown as sticks with carbon atoms colored uniquely,
+    enabling direct visual comparison of binding modes.
+
+    Args:
+        receptor_pdb:   Protein PDB file path
+        ligand_entries: List of dicts, each with keys:
+                          - name    (str): ligand display name
+                          - pdbqt   (str): path to docked ligand PDBQT file
+                          - color   (str): PyMOL color for C atoms (e.g. 'gold', 'cyan')
+                        Example:
+                          [
+                            {"name": "Nirmatrelvir", "pdbqt": "nirm_docked.pdbqt", "color": "gold"},
+                            {"name": "Compound-A", "pdbqt": "cmpA_docked.pdbqt", "color": "cyan"},
+                          ]
+        center:         (x, y, z) center of the binding pocket
+        output_png:     Output PNG path
+        distance:       Pocket surface radius around center (Å)
+        width, height:  Output resolution in pixels
+        dpi:            Output DPI
+
+    Returns:
+        True if PNG was saved successfully
+    """
+    if not _HAVE_PYMOL:
+        logger.info("[autodock] PyMOL not available — render_comparison skipped")
+        return False
+
+    cmd = _pymol_cmd
+    tmp_dir = tempfile.mkdtemp(prefix='render_comparison_')
+
+    try:
+        png_abs = os.path.abspath(output_png)
+        os.makedirs(os.path.dirname(png_abs) or '.', exist_ok=True)
+
+        # ── Load receptor ───────────────────────────────────────────────────
+        cmd.load(receptor_pdb, 'receptor')
+        cmd.hide('everything', 'receptor')
+        # Publication cartoon
+        cmd.show('cartoon', 'receptor')
+        cmd.set('cartoon_smooth_loops', 0, 'receptor')
+        cmd.set('cartoon_fancy_helices', 1, 'receptor')
+        cmd.color('bluewhite', 'receptor')
+
+        # ── Define pocket selection ─────────────────────────────────────────
+        cx, cy, cz = center
+        pocket_sel = f'br. receptor and center {cx},{cy},{cz} around {distance}'
+        cmd.select('pocket_atoms', pocket_sel)
+
+        # ── Pocket surface ──────────────────────────────────────────────────
+        cmd.show('surface', 'pocket_atoms')
+        cmd.set('surface_color', 'white', 'pocket_atoms')
+        cmd.set('surface_transparency', 0.35, 'pocket_atoms')
+        cmd.set('transparency', 0.35, 'pocket_atoms')
+        cmd.set('surface_quality', 1)
+
+        # ── Load each ligand ───────────────────────────────────────────────
+        legend_items = []  # (name, color_hex) for legend
+        for i, entry in enumerate(ligand_entries):
+            name = entry.get('name', f'ligand_{i}')
+            pdbqt = entry.get('pdbqt')
+            color = entry.get('color', 'white')
+
+            if not pdbqt or not os.path.exists(pdbqt):
+                logger.warning(f"[autodock] render_comparison: ligand PDBQT not found: {pdbqt}")
+                continue
+
+            # Safe PyMOL object name (no spaces, no special chars)
+            safe_name = name.replace(' ', '_').replace('-', '_')
+            obj_name = f'ligand_{safe_name}_{i}'
+
+            cmd.load(pdbqt, obj_name)
+            # Show all atoms as sticks, C atoms in the assigned color
+            cmd.show('sticks', obj_name)
+            cmd.util.coloring(obj_name)  # Default element coloring first
+            cmd.color(color, f'{obj_name} and elem C')
+
+            # Label: put text label at ligand centroid
+            cmd.select(f'lig_cent_{i}', f'{obj_name} around 0')
+            label_sel = f'br. {obj_name} and not elem H'
+            cmd.center(label_sel)
+            lx, ly, lz = cmd.get_view().tolist()[11:14]  # approximate center
+            # Actually get the centroid of the ligand
+            coords = []
+            cmd.iterate(f'{obj_name} and not elem H',
+                        'coords.append([x, y, z])',
+                        space={'coords': coords})
+            if coords:
+                lx = sum(c[0] for c in coords) / len(coords)
+                ly = sum(c[1] for c in coords) / len(coords)
+                lz = sum(c[2] for c in coords) / len(coords)
+                cmd.pseudoatom(f'label_{safe_name}_{i}',
+                               pos=(lx, ly, lz),
+                               label=name,
+                               color=color)
+                cmd.set('label_color', 'black', f'label_{safe_name}_{i}')
+                cmd.set('label_size', 20, f'label_{safe_name}_{i}')
+                cmd.set('label_font_id', 16, f'label_{safe_name}_{i}')
+
+            legend_items.append((name, color))
+            logger.info(f"[autodock] render_comparison: loaded {name} ({color})")
+
+        # ── Add legend (top-right corner) via pseudoatom ───────────────────
+        # Build a legend using a pseudoatom cluster in the top-right of the view
+        legend_y_start = cy + distance * 1.5
+        legend_x = cx + distance * 1.2
+        for j, (lname, lcolor) in enumerate(legend_items):
+            ly_pos = legend_y_start - j * 3.0
+            cmd.pseudoatom(f'leg_item_{j}',
+                           pos=(legend_x, ly_pos, lz),
+                           color=_LEGEND_COLOR_MAP.get(lcolor, lcolor))
+            cmd.label(f'leg_item_{j}', f'"{lname}"')
+            cmd.set('label_color', 'black', f'leg_item_{j}')
+            cmd.set('label_size', 18, f'leg_item_{j}')
+            cmd.set('label_font_id', 16, f'leg_item_{j}')
+            # Color swatch
+            cmd.show('spheres', f'leg_item_{j}')
+            cmd.set('sphere_scale', 0.3, f'leg_item_{j}')
+            cmd.color(lcolor, f'leg_item_{j}')
+
+        # ── Publication settings ────────────────────────────────────────────
+        apply_lighting(cmd, 'DEFAULT')
+        apply_ray_settings(cmd, 'PUBLICATION')
+        cmd.bg_color(BG_WHITE)
+
+        # ── Zoom + orient ───────────────────────────────────────────────────
+        cmd.zoom('pocket_atoms', buffer=10)
+        cmd.orient('pocket_atoms')
+
+        # ── Save ────────────────────────────────────────────────────────────
+        cmd.png(png_abs, width=width, height=height, dpi=dpi, ray=1)
+        cmd.sync()  # Ensure PNG is written before we return
+
+        ok = os.path.exists(png_abs) and os.path.getsize(png_abs) > 5000
+        size = os.path.getsize(png_abs) // 1024 if ok else 0
+        logger.info(f"[autodock] render_comparison: {'OK' if ok else 'FAILED'} "
+                    f"({size}KB, {len(legend_items)} ligands) → {png_abs}")
+        return ok
+
+    except Exception as e:
+        import traceback
+        logger.info(f"[autodock] render_comparison failed: {e}")
+        traceback.print_exc()
+        return False
+
+    finally:
+        # Clean up PyMOL objects
+        if _HAVE_PYMOL:
+            try:
+                cmd.delete('all')
+            except Exception:
+                pass
+        import shutil
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
+# Color mapping for legend items (PIL/matplotlib-compatible hex → PyMOL name)
+_LEGEND_COLOR_MAP = {
+    'gold':    'gold',
+    'cyan':    'cyan',
+    'magenta': 'magenta',
+    'green':   'green',
+    'orange':  'orange',
+    'red':     'red',
+    'blue':    'blue',
+    'yellow':  'yellow',
+    'white':   'white',
+    'gray':    'gray70',
+    'grey':    'gray70',
+    'purple':  'purple',
+    'lime':    'lime',
+    'pink':    'pink',
+    'brown':   'brown',
+    'tan':     'tan',
+    'salmon':  'salmon',
+    'violet':  'violet',
+    'teal':    'teal',
+    'olive':   'olive',
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # DOCKING
 # ─────────────────────────────────────────────────────────────────────────────
 

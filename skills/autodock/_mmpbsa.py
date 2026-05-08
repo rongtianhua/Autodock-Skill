@@ -3,8 +3,19 @@ Autodock MM/PBSA Module
 ========================
 Post-docking binding free energy estimation using MM/GBSA.
 
-Lightweight implementation based on RDKit + NumPy + custom force field.
-No AmberTools / OpenMM / APBS required.
+.. warning::
+
+   **This is a simplified MM/GBSA implementation for relative ranking and
+   hot-spot residue identification. It is NOT intended for publication-quality
+   absolute ΔG values.**
+
+
+   Expected accuracy: ±2–5 kcal/mol vs. experiment. Do not report raw ΔG_bind
+   values from this module in publications without explicit disclaimer.
+
+   For publication-grade absolute binding free energies, install AmberTools
+   and use the official MMPBSA.py workflow instead.
+
 
 Scientific basis:
 - Gas-phase interaction energy: Coulomb + Lennard-Jones (non-bonded only)
@@ -40,6 +51,10 @@ from autodock._core import autodock_logger, _HAVE_RDKIT
 from autodock._preparation import _read_ligand_from_pdbqt_3d
 
 logger = autodock_logger
+
+# Publication-grade flag — False means this is a simplified screening implementation
+# Set to True only if using AmberTools MMPBSA.py with full PBSA electrostatics
+_PUBLICATION_GRADE = False
 
 # ─── Physical constants ──────────────────────────────────────────────────────
 _K_ELEC = 332.0636       # kcal·Å/(mol·e²) — Coulomb constant in vacuo
@@ -229,6 +244,16 @@ class MMPBSAResult:
     epsilon_solvent: float = 80.0
     n_receptor_atoms: int = 0
     n_ligand_atoms: int = 0
+
+    @property
+    def is_publication_grade(self) -> bool:
+        """"Whether this result meets publication-quality standards.
+
+
+        Returns False — this module uses a simplified MM/GBSA implementation.
+        AmberTools MMPBSA.py is required for publication-grade absolute energies.
+        """
+        return False
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -1164,6 +1189,12 @@ def compute_mmpbsa(
     docked_pdbqt: str = None,
     poses_pdbqt: List[str] = None,
     method: str = 'gb',
+    # Amber-specific parameters
+    amber_protocol: str = 'quick',
+    amber_method: str = 'gb',
+    use_gpu: bool = False,
+    amber_output_dir: str = None,
+    # Fast-mode parameters
     use_obc2: bool = True,
     compute_entropy: bool = True,
     salt_conc: float = 0.15,
@@ -1171,61 +1202,121 @@ def compute_mmpbsa(
     epsilon_solvent: float = 80.0,
     decomp: bool = True,
     compute_sasa: bool = True,
-) -> MMPBSAResult:
+    n_threads: int = 4,
+) -> 'MMPBSAResult':
     """
     Compute MM/PBSA binding free energy for a receptor-ligand complex.
 
-    This is a lightweight implementation using RDKit + custom force field
-    parameters. No AmberTools or OpenMM required.
+    Two methods available:
 
-    Features:
+    **'fast' (default, alias 'gb'):
+        Lightweight RDKit-based implementation (~30 seconds).
+        Good for screening and relative ranking.
+        NOT recommended for publication absolute energies.
+
+    **'amber':
+        Publication-grade AmberTools MM/PBSA (requires autodock-amber env).
+        Uses full MD simulation + MMPBSA.py calculation.
+        Accuracy: ±0.5-1.5 kcal/mol with proper sampling.
+
+    Features (fast mode):
     - OBC2 Generalized Born model (Onufriev et al. 2004) as default
     - Interaction Entropy (Duan et al. 2016) when multiple poses are provided
     - Empirical entropy correction for single-pose calculations
     - Per-residue energy decomposition
     - SASA-based non-polar solvation (Shrake-Rupley algorithm)
 
-    Workflow:
-      1. Parse receptor PDB and ligand PDBQT(s)
-      2. Compute Gasteiger charges (if not present in PDBQT)
-      3. Calculate gas-phase energies (Coulomb + vdW) for complex, receptor, ligand
-      4. Calculate GB polar solvation and SASA non-polar solvation
-      5. ΔG_bind = ΔE_mm + ΔG_solv - TΔS (entropy correction)
-      6. (optional) Per-residue energy decomposition
+    Amber protocols:
+    - 'quick':   Energy minimization only (~5-10 min)
+    - 'short':   Minimize + 1ns NVT (~30-60 min)
+    - 'medium':  Minimize + heat + 10ns NPT (~2-4 hours)
+    - 'full':    Minimize + heat + 100ns NPT (~8-16 hours, GPU recommended)
 
     Args:
         receptor_pdb:   Path to receptor PDB file
         ligand_pdbqt:   Path to docked ligand PDBQT file
         docked_pdbqt:   Alias for ligand_pdbqt (backward compat)
         poses_pdbqt:    List of alternative ligand pose PDBQT paths for Interaction
-                         Entropy calculation. If provided, -TΔS is computed using the
-                         Duan et al. 2016 IE method across all poses.
-        method:         'gb' = Generalized Born (only option currently)
+                         Entropy calculation (fast mode only).
+        method:         'fast'/'gb' = Simplified RDKit (default), 'amber' = AmberTools
+        amber_protocol: MD protocol for Amber mode ('quick', 'short', 'medium', 'full')
+        amber_method:   Solvation method for Amber mode ('gb' or 'pb')
+        use_gpu:       Use GPU acceleration (Amber mode only)
+        amber_output_dir: Output directory for Amber files (None = temp dir)
         use_obc2:       Use OBC2 GB model (True, recommended) or simplified Still model
-        compute_entropy:Whether to compute entropy correction (-TΔS)
-        salt_conc:      Salt concentration in Molar (used in ionic strength screening)
+                         (fast mode only)
+        compute_entropy:Whether to compute entropy correction (-TΔS) (fast mode only)
+        salt_conc:      Salt concentration in Molar
         temperature:    Temperature in Kelvin
         epsilon_solvent: Solvent dielectric constant
         decomp:         Whether to compute per-residue decomposition
-        compute_sasa:   Whether to compute SASA (expensive but more accurate, default True)
+        compute_sasa:   Whether to compute SASA (fast mode only)
+        n_threads:      Number of CPU threads for Amber MD
 
     Returns:
         MMPBSAResult with energy components and per-residue decomposition
 
     Example:
-        >>> # Single pose with OBC2 + empirical entropy
+        >>> # Fast mode (screening, ~30s)
         >>> result = compute_mmpbsa("6LU7.pdb", "nirmatrelvir_docked.pdbqt")
         >>> print(f"ΔG_bind = {result.delta_g_bind:.2f} kcal/mol")
         >>>
-        >>> # Multiple poses with Interaction Entropy
+        >>> # Publication-grade (Amber, ~10 min)
         >>> result = compute_mmpbsa(
-        ...     "6LU7.pdb", "pose1.pdbqt",
-        ...     poses_pdbqt=["pose1.pdbqt", "pose2.pdbqt", "pose3.pdbqt"]
+        ...     "6LU7.pdb", "docked.pdbqt",
+        ...     method='amber', amber_protocol='short'
         ... )
-        >>> print(f"-TΔS = {result.t_delta_s:.2f} kcal/mol")
     """
+    # Amber mode: full publication-grade calculation
+    if method == 'amber':
+        from autodock._mmpbsa_amber import compute_mmpbsa_amber, _HAVE_AMBER
+        if not _HAVE_AMBER:
+            raise RuntimeError(
+                "AmberTools not found. Please activate autodock-amber environment:\n"
+                "  conda activate autodock-amber"
+            )
+        ligand_file = docked_pdbqt or ligand_pdbqt
+        amber_result = compute_mmpbsa_amber(
+            receptor_pdb=receptor_pdb,
+            ligand_pdbqt=ligand_file,
+            output_dir=amber_output_dir,
+            protocol=amber_protocol,
+            method=amber_method,
+            use_gpu=use_gpu,
+            n_threads=n_threads,
+            decompose=decomp,
+        )
+        # Convert to standard MMPBSAResult
+        return MMPBSAResult(
+            delta_g_bind=amber_result.delta_g_bind,
+            delta_e_mm=(amber_result.delta_e_vdw + amber_result.delta_e_elec
+                         if amber_result.delta_e_vdw and amber_result.delta_e_elec
+                         else None),
+            delta_g_solv=((amber_result.delta_g_gb or amber_result.delta_g_pb or 0) +
+                         (amber_result.delta_g_sa or 0)
+                         if (amber_result.delta_g_gb or amber_result.delta_g_pb or amber_result.delta_g_sa)
+                         else None),
+            delta_e_elec=amber_result.delta_e_elec,
+            delta_e_vdw=amber_result.delta_e_vdw,
+            delta_g_gb=amber_result.delta_g_gb,
+            delta_g_sa=amber_result.delta_g_sa,
+            t_delta_s=amber_result.t_delta_s,
+            per_residue=amber_result.per_residue,
+            receptor=receptor_pdb,
+            ligand=ligand_file,
+            method=f"MM/{amber_method.upper()}SA (AmberTools, {amber_protocol})",
+            n_receptor_atoms=0,
+            n_ligand_atoms=0,
+        )
+
+    # Fast mode (original implementation)
     if not _HAVE_RDKIT:
         raise RuntimeError("RDKit required for MM/PBSA: conda activate autodock313")
+
+    logger.warning(
+        "[mmpbsa] WARNING: This is a simplified MM/GBSA implementation. "
+        "For publication-quality absolute ΔG values, use method='amber' with AmberTools."
+    )
 
     ligand_file = docked_pdbqt or ligand_pdbqt
     if not os.path.exists(receptor_pdb):
