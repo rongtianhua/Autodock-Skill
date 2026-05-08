@@ -18,7 +18,7 @@ from rdkit.Chem import AllChem, Descriptors, rdPartialCharges
 from meeko import MoleculePreparation, RDKitMolCreate, PDBQTWriterLegacy, Polymer
 from meeko.polymer import PolymerCreationError
 
-from autodock._core import autodock_logger, _HAVE_RDKIT, _HAVE_MEEKO, _SKIP_RES, PreparationError
+from autodock._core import autodock_logger, _HAVE_RDKIT, _HAVE_MEEKO, _SKIP_RES, _SKIP_WATER, PreparationError
 
 # Backward-compat logger alias
 logger = autodock_logger
@@ -249,22 +249,66 @@ def prepare_ligand_conformers(smiles: str,
 
 # Pocket dimension sanity bounds (Angstroms)
 _POCKET_MIN_DIM = 5.0   # minimum pocket span in any axis
-_POCKET_MAX_DIM = 60.0 # maximum pocket span (larger → likely false positive)
+_POCKET_MAX_DIM = 40.0  # maximum pocket span (40 Å is more than enough for drug-sized molecules)
+
+# Volume-based false positive filtering
+# Pockets > 2000 A³ are typically solvent-exposed grooves or PPI interfaces
+_POCKET_MAX_VOLUME = 2000.0   # Å³
+_POCKET_MIN_DEPTH = 3.0       # Å — very shallow pockets are often false positives
+
+# Confidence thresholds (soft warnings, not hard filters)
+_P2RANK_PROB_THRESHOLD = 0.15      # P2Rank confidence threshold
+_DRUGGABILITY_THRESHOLD = 0.15     # fpocket druggability threshold
 
 
-def _compute_box_size(dims: tuple, padding: float = 5.0) -> tuple:
+def _compute_box_size(dims: tuple, padding: float = 5.0,
+                     ligand_pdbqt: str | None = None) -> tuple:
     """
     Compute Vina docking box size from pocket dimensions.
 
     Rounds to nearest 0.5 A to match Vina's internal 0.375 A grid spacing.
     Ensures minimum box of 10 A on each axis.
+
+    If ligand_pdbqt provided, ensures box is large enough for the ligand
+    plus additional padding (box must fit ligand + 2*padding on each side).
     """
     raw = [d + 2 * padding for d in dims]
+
+    if ligand_pdbqt and os.path.exists(ligand_pdbqt):
+        lig_dims = _estimate_ligand_dimensions(ligand_pdbqt)
+        if lig_dims:
+            # Box must fit ligand + 2*padding on each side
+            raw = [max(r, ld + 4 * padding) for r, ld in zip(raw, lig_dims)]
+
     box = []
     for v in raw:
         rounded = round(v * 2) / 2  # nearest 0.5 A
         box.append(max(10.0, rounded))
     return tuple(box)
+
+
+def _estimate_ligand_dimensions(pdbqt_path: str) -> tuple | None:
+    """Estimate ligand bounding box from PDBQT coordinates."""
+    try:
+        coords = []
+        with open(pdbqt_path) as f:
+            for line in f:
+                if line.startswith(('ATOM', 'HETATM')):
+                    try:
+                        x = float(line[30:38])
+                        y = float(line[38:46])
+                        z = float(line[46:54])
+                        coords.append((x, y, z))
+                    except ValueError:
+                        continue
+        if coords:
+            xs = [c[0] for c in coords]
+            ys = [c[1] for c in coords]
+            zs = [c[2] for c in coords]
+            return (max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs))
+    except Exception:
+        pass
+    return None
 
 
 def _run_p2rank_rescore(prep_pdb_abs: str, prep_pdb_basename: str,
@@ -370,7 +414,10 @@ def find_top_pockets(receptor_pdb: str,
                     ligand_pdb: str = None,
                     padding: float = 5.0,
                     max_pockets: int = 3,
-                    use_p2rank: bool = True) -> list:
+                    use_p2rank: bool = True,
+                    fpocket_min_alpha: float = 3.4,
+                    fpocket_max_alpha: float = 6.2,
+                    ligand_pdbqt: str = None) -> list:
     """
     Identify top-N candidate binding pockets (sorted by P2Rank probability desc).
 
@@ -409,7 +456,7 @@ def find_top_pockets(receptor_pdb: str,
         xs = [c.x for c in coords]; ys = [c.y for c in coords]; zs = [c.z for c in coords]
         center = (sum(xs) / len(xs), sum(ys) / len(ys), sum(zs) / len(zs))
         dims = (max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs))
-        box_size = _compute_box_size(dims, padding)
+        box_size = _compute_box_size(dims, padding, ligand_pdbqt)
         logger.info(f"[autodock] Binding site from ligand: center={center}, box={box_size}")
         return [{'center': center, 'box_size': box_size,
                  'druggability': None, 'p2rank_prob': None, 'pocket_num': None}]
@@ -434,7 +481,9 @@ def find_top_pockets(receptor_pdb: str,
 
     try:
         result = subprocess.run(
-            [fpocket_bin, '-f', prep_pdb_abs],
+            [fpocket_bin, '-f', prep_pdb_abs,
+             '-m', str(fpocket_min_alpha),
+             '-M', str(fpocket_max_alpha)],
             capture_output=True, text=True, timeout=120, cwd=prep_dir
         )
         if result.returncode != 0:
@@ -457,22 +506,44 @@ def find_top_pockets(receptor_pdb: str,
                       f"(prob range: {min(p2rank_probs.values()):.3f} - "
                       f"{max(p2rank_probs.values()):.3f})")
 
+        # Validate P2Rank pocket count matches fpocket
+        if p2rank_probs and len(p2rank_probs) != len(pockets):
+            logger.warning(
+                f"[autodock] P2Rank returned {len(p2rank_probs)} pockets, "
+                f"but fpocket found {len(pockets)}. Number mapping may be unreliable."
+            )
+
         # ── Sort and filter pockets ──────────────────────────────────
         # Primary sort: P2Rank probability (higher = more confident)
-        # Secondary sort: fpocket Druggability Score (tiebreaker)
+        # Secondary sort: Druggability Score minus opening penalty
+        # Prefer closed pockets (0-1 openings) over open pockets (2+ openings)
         def pocket_sort_key(p):
             prob = p2rank_probs.get(p['num'], None) if p2rank_probs else None
-            return (prob if prob is not None else -1.0, p['druggability'])
+            drugg = p['druggability']
+            # Closed pockets are more likely to be true binding sites
+            opening_penalty = 0.0
+            if p.get('openings') is not None:
+                opening_penalty = p['openings'] * 0.05  # -0.05 per opening
+            return (prob if prob is not None else -1.0,
+                    drugg - opening_penalty)
 
         pockets.sort(key=pocket_sort_key, reverse=True)
 
         result_pockets = []
         for p in pockets:
+            # Dimension check
             if any(d < _POCKET_MIN_DIM or d > _POCKET_MAX_DIM for d in p['dims']):
                 continue
+            # Volume check — oversized pockets are typically false positives
+            if p.get('volume') is not None and p['volume'] > _POCKET_MAX_VOLUME:
+                logger.warning(f"[autodock] Pocket #{p['num']} oversized ({p['volume']:.0f} Å³ > {_POCKET_MAX_VOLUME}), skipping")
+                continue
+            # Depth check — soft warning for shallow pockets
+            if p.get('depth') is not None and p['depth'] < _POCKET_MIN_DEPTH:
+                logger.info(f"[autodock] Pocket #{p['num']} shallow (depth={p['depth']:.1f}Å), may be false positive")
             prob = p2rank_probs.get(p['num'], None) if p2rank_probs else None
             center = p['center']
-            box_size = _compute_box_size(p['dims'], padding)
+            box_size = _compute_box_size(p['dims'], padding, ligand_pdbqt)
             result_pockets.append({
                 'center': center,
                 'box_size': box_size,
@@ -491,8 +562,15 @@ def find_top_pockets(receptor_pdb: str,
             )
 
         for i, pk in enumerate(result_pockets):
-            prob_str = (f"P2Rank={pk['p2rank_prob']:.3f}"
-                        if pk['p2rank_prob'] is not None else "P2Rank=N/A")
+            prob = pk['p2rank_prob']
+            prob_str = f"P2Rank={prob:.3f}" if prob is not None else "P2Rank=N/A"
+            # Low confidence warnings
+            if prob is not None and prob < _P2RANK_PROB_THRESHOLD:
+                logger.warning(f"[autodock] Pocket {i+1} (fpocket #{pk['pocket_num']}): "
+                               f"LOW P2Rank confidence ({prob:.3f} < {_P2RANK_PROB_THRESHOLD})")
+            if pk['druggability'] < _DRUGGABILITY_THRESHOLD:
+                logger.warning(f"[autodock] Pocket {i+1} (fpocket #{pk['pocket_num']}): "
+                               f"LOW druggability ({pk['druggability']:.3f} < {_DRUGGABILITY_THRESHOLD})")
             logger.info(f"[autodock] Pocket {i+1} (fpocket #{pk['pocket_num']}): "
                   f"center={pk['center']}, box={pk['box_size']} "
                   f"({prob_str}, druggability={pk['druggability']:.3f})")
@@ -509,16 +587,16 @@ def find_top_pockets(receptor_pdb: str,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _prepare_pdb_for_fpocket(pdb_in: str, pdb_out: str) -> None:
-    """Remove waters and non-structural residues, keep only ATOM/HETATM."""
+    """Remove waters, keep ATOM/HETATM. Only skip generic water names."""
     with open(pdb_in) as fin, open(pdb_out, 'w') as fout:
         for line in fin:
             if line.startswith('ATOM') or line.startswith('HETATM'):
-                if line[17:20].strip() not in _SKIP_RES:
+                if line[17:20].strip() not in _SKIP_WATER:
                     fout.write(line)
 
 
 def _parse_fpocket_info(info_path: str) -> list:
-    """Parse fpocket *_info.txt to extract pocket centroids and dims."""
+    """Parse fpocket *_info.txt to extract pocket centroids, dims, and descriptors."""
     import re, numpy as np
 
     pockets = []
@@ -531,6 +609,22 @@ def _parse_fpocket_info(info_path: str) -> list:
         pocket_num = int(m.group(1))
         dm = re.search(r'Druggability Score :\s+([\d.]+)', block)
         druggability = float(dm.group(1)) if dm else 0.0
+
+        # Parse additional fpocket descriptors
+        vm = re.search(r'Volume\s+:\s+([\d.]+)', block)
+        volume = float(vm.group(1)) if vm else None
+
+        depm = re.search(r'Depth\s+:\s+([\d.]+)', block)
+        depth = float(depm.group(1)) if depm else None
+
+        om = re.search(r'Number of mouth openings\s+:\s+(\d+)', block)
+        openings = int(om.group(1)) if om else None
+
+        apm = re.search(r'Number of apolar alpha sphere\s+:\s+(\d+)', block)
+        n_apolar = int(apm.group(1)) if apm else None
+
+        ppm = re.search(r'Number of polar alpha sphere\s+:\s+(\d+)', block)
+        n_polar = int(ppm.group(1)) if ppm else None
 
         pocket_dir = os.path.dirname(info_path)
         pqr_path = os.path.join(pocket_dir, f'..', f'pocket{pocket_num}_vert.pqr')
@@ -546,7 +640,6 @@ def _parse_fpocket_info(info_path: str) -> list:
                         x = float(line[30:38]); y = float(line[38:46]); z = float(line[46:54])
                         coords.append([x, y, z])
                     except ValueError:
-                        # Skip malformed PQR lines (e.g. missing coordinates)
                         continue
             if coords:
                 ca = np.array(coords)
@@ -558,6 +651,11 @@ def _parse_fpocket_info(info_path: str) -> list:
         if center:
             pockets.append({
                 'num': pocket_num, 'druggability': druggability,
+                'volume': volume,
+                'depth': depth,
+                'openings': openings,
+                'n_apolar': n_apolar,
+                'n_polar': n_polar,
                 'center': center,
                 'dims': dims if dims else (20.0, 20.0, 20.0),
             })

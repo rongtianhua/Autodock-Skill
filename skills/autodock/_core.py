@@ -409,7 +409,15 @@ def _safe_color(cmd, color, selection):
 
 # Water / non-structural residue names to remove during receptor/pocket prep.
 # Covers PDB-standard water names and common alt. loc. identifiers.
-_SKIP_RES = {'HOH', 'WAT', 'H2O', 'PJE', '02J', '010', '03U', '03T', '02K', '02L'}
+# Generic water names — always skipped during receptor preparation
+_SKIP_WATER = {'HOH', 'WAT', 'H2O', 'DOD'}
+
+# PDB-specific linker/crystallographic additives — only skip for specific PDBs
+_SKIP_PDB_SPECIFIC = {'PJE', '02J', '010', '03U', '03T', '02K', '02L'}
+
+# Backward compat: combined set (for code that still imports _SKIP_RES)
+_SKIP_RES = set(_SKIP_WATER)
+_SKIP_RES.update(_SKIP_PDB_SPECIFIC)
 
 # P2Rank binary (installed manually under tools/)
 # P0-1 ✅: P2Rank 2.5.1 已安装（2026-05-04）
