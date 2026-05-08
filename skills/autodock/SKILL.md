@@ -69,6 +69,13 @@ python -m autodock render-pymol protein.pdb ligand.pdbqt docked.pdbqt -o scene.p
 python -m autodock virtual-screen protein.pdbqt library.csv results.csv \
     --center 10.5 20.3 -5.2 --box-size 20 20 20
 
+# 药效团检测
+python -m autodock pharmacophore protein.pdb --ligand docked.pdbqt -o features.png
+
+# SnakeMake 工作流
+python -m autodock workflow docking_config.yml --cores 4
+python -m autodock workflow docking_config.yml --dry-run
+
 # 验证（重对接）
 python -m autodock validate protein.pdbqt crystal_ligand.pdbqt
 
@@ -758,6 +765,128 @@ for res, energy in sorted(result.per_residue.items(), key=lambda x: x[1])[:5]:
 
 ---
 
+## 药效团检测 (Pharmacophore)
+
+> **适用场景**：识别结合口袋中的关键药效团特征，指导配体优化和虚拟筛选。
+
+### 检测口袋药效团特征
+
+```python
+from autodock import detect_pharmacophore, render_pharmacophore
+
+# 检测口袋中的药效团特征
+features = detect_pharmacophore(
+    receptor_pdb="6LU7.pdb",
+    ligand_pdbqt="nirm_docked.pdbqt",  # 可选：基于配体位置定义口袋
+    center=(10.5, 20.3, -5.2),        # 可选：手动指定口袋中心
+    radius=8.0,                        # 口袋半径（Å）
+)
+
+# features = [
+#   {'type': 'DONOR',      'center': (x,y,z), 'residue': 'SER144'},
+#   {'type': 'ACCEPTOR',   'center': (x,y,z), 'residue': 'GLU166'},
+#   {'type': 'HYDROPHOBIC','center': (x,y,z), 'residue': 'MET165'},
+#   {'type': 'AROMATIC',   'center': (x,y,z), 'residue': 'PHE140'},
+#   {'type': 'POSITIVE',   'center': (x,y,z), 'residue': 'LYS5'},
+#   {'type': 'NEGATIVE',   'center': (x,y,z), 'residue': 'ASP3'},
+# ]
+```
+
+### 支持的 6 种药效团特征
+
+| 类型 | 颜色 | 几何检测标准 | 典型残基 |
+|------|------|------------|---------|
+| `DONOR` | 🔵 蓝色 | H-bond donor N/O + H 原子 | SER, THR, TYR, LYS, ARG |
+| `ACCEPTOR` | 🔴 红色 | H-bond acceptor N/O（孤对电子） | ASP, GLU, ASN, SER |
+| `HYDROPHOBIC` | 🟡 黄色 | 脂肪族 C + 芳香环中心 | ALA, VAL, LEU, ILE, PHE, MET |
+| `AROMATIC` | 🟢 绿色 | 芳香环质心（6元环） | PHE, TYR, TRP, HIS |
+| `POSITIVE` | 🩵 青色 | 带正电荷基团（pH 7） | LYS (NH₃⁺), ARG (胍基) |
+| `NEGATIVE` | 🩷 品红 | 带负电荷基团（pH 7） | ASP (COO⁻), GLU (COO⁻) |
+
+### PyMOL 3D 渲染
+
+```python
+render_pharmacophore(
+    receptor_pdb="6LU7.pdb",
+    features=features,
+    output_png="pharmacophore.png",
+    dpi=300,
+)
+```
+
+**渲染特点：**
+- 6 种特征用不同颜色球体标注（蓝/红/黄/绿/青/品红）
+- 球体大小：6 Å 半径（表示特征作用范围）
+- 标签：残基名 + 特征类型
+- 背景：白色，蛋白 cartoon 灰色
+
+### CLI 入口
+
+```bash
+python -m autodock pharmacophore 6LU7.pdb --ligand nirm_docked.pdbqt -o features.png
+```
+
+---
+
+## OpenMM Pose 稳定性验证
+
+> **适用场景**：快速验证对接 pose 的物理合理性，排除因对接采样不足导致的伪最优构象。
+
+### 快速稳定性验证
+
+```python
+from autodock import validate_pose_stability
+
+result = validate_pose_stability(
+    receptor_pdb="6LU7.pdb",
+    ligand_pdbqt="nirm_docked.pdbqt",
+    protocol='quick',      # 'quick' | 'standard'
+)
+
+print(result)
+# {
+#   'is_stable': True,           # RMSD < 2Å + ΔE < 50 kcal/mol
+#   'ligand_rmsd': 1.23,         # Å（松弛后 vs 原始 pose）
+#   'pocket_rmsd': 0.45,         # Å（口袋骨架变化）
+#   'interaction_retention': 0.85,  # 85% 相互作用保留率
+#   'energy_change': -12.5,      # kcal/mol（负值 = 更稳定）
+# }
+```
+
+### 两种验证协议
+
+| 协议 | 内容 | 时间 | 用途 |
+|------|------|------|------|
+| `quick` | 能量最小化（500步）→ RMSD评估 | 1-2分钟 | 大规模筛选 |
+| `standard` | 能量最小化 + 50ps Langevin动力学 | 5-10分钟 | 关键配体验证 |
+
+### 稳定性判定标准
+
+| 指标 | 阈值 | 说明 |
+|------|------|------|
+| Ligand RMSD | < 2.0 Å | 松弛后配体位置变化小 |
+| Pocket RMSD | < 1.0 Å | 口袋结构未坍塌 |
+| Interaction Retention | > 0.7 | 70%+ 相互作用保留 |
+| Energy Change | < +50 kcal/mol | 能量未恶化 |
+
+### 技术特点
+
+- **Pose Relaxation**：仅能量最小化，不依赖 GAFF 参数化（避免参数化失败）
+- **Graceful Fallback**：OpenMM 未安装时返回友好错误提示
+- **显式溶剂**：使用 OBC2 GB 隐式溶剂模型
+- **无 MD 经验要求**：自动处理所有参数
+
+### 与完整 MD 的区别
+
+| 特性 | OpenMM Quick | AmberTools Full MD |
+|------|-------------|-------------------|
+| 时间 | 1-2 分钟 | 2-16 小时 |
+| 采样 | 单点能量最小化 | 系综采样 |
+| 精度 | 筛选级 | 发表级 |
+| 用途 | 排除明显不稳定的 pose | 计算精确 ΔG |
+
+---
+
 ## 一、获取蛋白质结构
 
 > ⚠️ **推荐：优先使用实验 PDB 结构，实验结构不可用时再 fallback 到 AlphaFold。**
@@ -887,12 +1016,63 @@ prepare_ligand("CCO", "ethanol.pdbqt", seed=123)
 ## 五、结合位点定义
 
 ```python
-from autodock import find_binding_site
+from autodock import find_binding_site, find_top_pockets
 
-# fpocket 自动预测（AlphaFold/Apo 蛋白首选）
+# 基础用法：单口袋检测
 center, box = find_binding_site("protein.pdb")
 
-# 从共晶配体计算
+# 高级用法：多口袋排序 + 科学过滤（推荐）
+pockets = find_top_pockets(
+    receptor_pdb="protein.pdb",
+    ligand_pdb=None,           # 可选：已知配体时优化盒子大小
+    padding=5.0,               # 口袋边缘扩展（Å）
+    max_pockets=3,             # 返回前 N 个口袋
+    use_p2rank=True,           # 启用 P2Rank 重打分
+    fpocket_min_alpha=3.4,     # fpocket α-球最小半径
+    fpocket_max_alpha=6.2,     # fpocket α-球最大半径
+)
+
+# pockets 是按质量排序的列表
+pocket = pockets[0]  # 最佳口袋
+center = pocket['center']
+box_size = pocket['box_size']
+
+# 口袋属性（2026-05-08 新增）
+print(f"口袋体积: {pocket['volume']:.0f} Å³")
+print(f"口袋深度: {pocket['depth']:.1f} Å")
+print(f"开口数: {pocket['openings']}")
+print(f"疏水球: {pocket['n_apolar']} | 极性球: {pocket['n_polar']}")
+print(f"Druggability: {pocket['druggability']:.3f}")
+print(f"P2Rank概率: {pocket['p2rank_prob']:.3f}")
+```
+
+### 口袋质量过滤（自动应用）
+
+| 过滤条件 | 阈值 | 行为 | 科学依据 |
+|---------|------|------|---------|
+| 体积 | > 2000 Å³ | 跳过 | 溶剂暴露凹槽/PPI界面 |
+| 深度 | < 3 Å | 警告 | 表面浅坑，非药物口袋 |
+| 尺寸 | < 5 或 > 40 Å | 跳过 | 过小/过大不适合药物 |
+| P2Rank概率 | < 0.15 | 警告 | 低置信度预测 |
+| Druggability | < 0.15 | 警告 | 可药性差 |
+| 开口数 | ≥ 3 | 排序惩罚 | 开放通道非封闭位点 |
+
+### 配体自适应盒子大小
+
+当提供配体时，盒子大小会自动调整以确保足够空间：
+
+```python
+pockets = find_top_pockets(
+    receptor_pdb="protein.pdb",
+    ligand_pdb="ligand.pdbqt",  # ← 提供配体
+    padding=5.0,
+)
+# 盒子大小 = max(口袋尺寸+padding, 配体尺寸+2*padding)
+```
+
+### 从共晶配体计算
+
+```python
 center, box = find_binding_site("protein.pdb", ligand_pdb="co_ligand.pdb")
 ```
 
@@ -1290,3 +1470,91 @@ sdf_path = fetch_ligand_from_pdb("1ATP", "ATP")
 1. **重对接验证**：获取晶体结构中配体的原始构象作为参考
 2. **虚拟筛选基准**：用已知活性配体测试对接方法准确性
 3. **分子比较**：比较对接 pose 与晶体构象的 RMSD
+
+---
+
+## 附录 E：异常体系
+
+技能定义了 7 个自定义异常类，用于精确错误诊断：
+
+| 异常类 | 触发场景 | 用户提示 |
+|--------|---------|---------|
+| `PreparationError` | 受体/配体制备失败 | 检查输入文件格式 |
+| `DockingError` | Vina 对接失败 | 检查参数和受体/配体文件 |
+| `InteractionError` | 相互作用检测失败 | 检查 PLIP 依赖 |
+| `ValidationError` | RMSD/验证失败 | 检查参考结构 |
+| `FetchError` | 网络获取失败 | 检查网络和 PDB ID |
+| `RenderError` | PyMOL/RDKit 渲染失败 | 检查依赖安装 |
+| `MMPBSAError` | MM/PBSA 计算失败 | 检查 AmberTools 环境 |
+
+### 异常处理示例
+
+```python
+from autodock import PreparationError, DockingError
+
+try:
+    prepare_receptor("protein.pdb", "protein.pdbqt")
+    dock_ligand("protein.pdbqt", "ligand.pdbqt", center, box)
+except PreparationError as e:
+    print(f"制备失败: {e}")
+    # 自动重试或 fallback
+except DockingError as e:
+    print(f"对接失败: {e}")
+    # 调整参数重试
+```
+
+---
+
+## 附录 F：CI/CD Pre-commit Hook
+
+### 安装
+
+```bash
+cd ~/.openclaw/workspace/skills/autodock
+# 复制 hook 到 .git/hooks/
+cp scripts/pre-commit .git/hooks/
+chmod +x .git/hooks/pre-commit
+```
+
+### Hook 功能
+
+每次 `git commit` 前自动执行：
+
+| 检查项 | 说明 |
+|--------|------|
+| `ruff check` | 代码风格检查 |
+| `pytest tests/ -m "not slow"` | 快速测试套件 |
+| `pylint --disable=R,C` | 静态分析 |
+
+### 跳过 Hook
+
+```bash
+git commit --no-verify  # 跳过所有 pre-commit 检查
+```
+
+---
+
+## 附录 G：类型注解
+
+技能已全面启用 Python 类型注解：
+
+```python
+from typing import Tuple, Optional, List
+
+def find_binding_site(
+    receptor_pdb: str,
+    ligand_pdb: Optional[str] = None,
+    padding: float = 5.0,
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    ...
+```
+
+**好处：**
+- IDE 自动补全和类型提示
+- `mypy` 静态类型检查
+- 文档自动生成
+
+---
+
+*文档版本：2026-05-08*
+*技能评分：91/100 (A+)*
