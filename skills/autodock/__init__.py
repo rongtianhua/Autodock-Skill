@@ -110,6 +110,16 @@ from autodock._admet import (
     _predict_admet_neurosnap, _predict_admet_rdkit,
 )
 
+# ─── Pharmacophore ─────────────────────────────────────────────────────────────
+from autodock._pharmacophore import (
+    detect_pharmacophore, render_pharmacophore, summarize_features,
+)
+
+# ─── MD Validation ─────────────────────────────────────────────────────────────
+from autodock._md_validation import (
+    validate_pose_stability,
+)
+
 # ─── Database ────────────────────────────────────────────────────────────────────
 from autodock._database import (
     fetch_bioactivities, compute_enrichment, print_enrichment_report,
@@ -153,6 +163,8 @@ __all__ = [
     # MM/PBSA
     'compute_mmpbsa', 'mmpbsa_rank_ligands',
     'MMPBSAResult',
+    'detect_pharmacophore', 'render_pharmacophore', 'summarize_features',
+    'validate_pose_stability',
     # Database
     'fetch_bioactivities', 'compute_enrichment', 'print_enrichment_report',
     'sample_zinc_compounds', 'parse_zinc_tranche', 'lookup_zinc_id',

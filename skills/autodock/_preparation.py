@@ -18,7 +18,7 @@ from rdkit.Chem import AllChem, Descriptors, rdPartialCharges
 from meeko import MoleculePreparation, RDKitMolCreate, PDBQTWriterLegacy, Polymer
 from meeko.polymer import PolymerCreationError
 
-from autodock._core import autodock_logger, _HAVE_RDKIT, _HAVE_MEEKO, _SKIP_RES
+from autodock._core import autodock_logger, _HAVE_RDKIT, _HAVE_MEEKO, _SKIP_RES, PreparationError
 
 # Backward-compat logger alias
 logger = autodock_logger
@@ -61,7 +61,7 @@ def prepare_receptor(pdb_file: str, output_pdbqt: str,
     from meeko import ResidueChemTemplates
 
     if not _HAVE_MEEKO or not _HAVE_RDKIT:
-        raise RuntimeError("meeko and rdkit required: conda activate autodock313")
+        raise PreparationError("meeko and rdkit required: conda activate autodock313")
 
     # ── Format detection ──────────────────────────────────────────────
     ext = os.path.splitext(pdb_file)[1].lower()
@@ -145,7 +145,7 @@ def prepare_ligand(smiles: str, output_pdbqt: str, name: str = "LIG",
         Path to output PDBQT file
     """
     if not _HAVE_RDKIT or not _HAVE_MEEKO:
-        raise RuntimeError("rdkit and meeko required: conda activate autodock313")
+        raise PreparationError("rdkit and meeko required: conda activate autodock313")
     if not isinstance(smiles, str):
         raise TypeError(f"smiles must be str, got {type(smiles).__name__}")
     if not isinstance(output_pdbqt, str):
@@ -153,7 +153,7 @@ def prepare_ligand(smiles: str, output_pdbqt: str, name: str = "LIG",
 
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
-        raise ValueError(f"Could not parse SMILES: {smiles}")
+        raise PreparationError(f"Could not parse SMILES: {smiles}")
     mol = Chem.AddHs(mol, addCoords=True)
     # Fixed seed → reproducible conformer across runs
     params_etkdg = AllChem.ETKDGv3()
@@ -171,7 +171,7 @@ def prepare_ligand(smiles: str, output_pdbqt: str, name: str = "LIG",
     os.makedirs(os.path.dirname(output_pdbqt) or '.', exist_ok=True)
     pdbqt_str, success, err = PDBQTWriterLegacy.write_string(setup)
     if not success:
-        raise RuntimeError(f"Meeko ligand prep failed: {err}")
+        raise PreparationError(f"Meeko ligand prep failed: {err}")
     with open(output_pdbqt, 'w') as f:
         f.write(pdbqt_str)
 
@@ -203,7 +203,7 @@ def prepare_ligand_conformers(smiles: str,
         List of PDBQT file paths (length = n_conformers)
     """
     if not _HAVE_RDKIT or not _HAVE_MEEKO:
-        raise RuntimeError("rdkit and meeko required: conda activate autodock313")
+        raise PreparationError("rdkit and meeko required: conda activate autodock313")
     if not isinstance(smiles, str):
         raise TypeError(f"smiles must be str, got {type(smiles).__name__}")
     if not isinstance(n_conformers, int) or n_conformers < 1:
@@ -218,7 +218,7 @@ def prepare_ligand_conformers(smiles: str,
 
         mol = Chem.MolFromSmiles(smiles)
         if mol is None:
-            raise ValueError(f"Could not parse SMILES: {smiles}")
+            raise PreparationError(f"Could not parse SMILES: {smiles}")
         mol = Chem.AddHs(mol, addCoords=True)
         params_etkdg = AllChem.ETKDGv3()
         params_etkdg.randomSeed = seed
@@ -232,7 +232,7 @@ def prepare_ligand_conformers(smiles: str,
 
         pdbqt_str, success, err = PDBQTWriterLegacy.write_string(setup)
         if not success:
-            raise RuntimeError(f"Meeko conformer {i} failed: {err}")
+            raise PreparationError(f"Meeko conformer {i} failed: {err}")
         with open(out_pdbqt, 'w') as fh:
             fh.write(pdbqt_str)
 
@@ -399,7 +399,7 @@ def find_top_pockets(receptor_pdb: str,
         P2Rank unavailable). Empty list if none pass validation.
     """
     if not _HAVE_RDKIT:
-        raise RuntimeError("rdkit required: conda activate autodock313")
+        raise PreparationError("rdkit required: conda activate autodock313")
 
     # ── Option 1: co-crystallized ligand (gold standard) ────────────────
     if ligand_pdb and os.path.exists(ligand_pdb):
@@ -438,15 +438,15 @@ def find_top_pockets(receptor_pdb: str,
             capture_output=True, text=True, timeout=120, cwd=prep_dir
         )
         if result.returncode != 0:
-            raise RuntimeError(f"fpocket failed: {result.stderr}")
+            raise PreparationError(f"fpocket failed: {result.stderr}")
 
         info_file = os.path.join(out_dir, base + '_info.txt')
         if not os.path.exists(info_file):
-            raise RuntimeError(f"fpocket did not produce info file: {info_file}")
+            raise PreparationError(f"fpocket did not produce info file: {info_file}")
 
         pockets = _parse_fpocket_info(info_file)
         if not pockets:
-            raise RuntimeError(f"No pockets found by fpocket in {receptor_pdb}")
+            raise PreparationError(f"No pockets found by fpocket in {receptor_pdb}")
 
         # ── P2Rank rescoring ──────────────────────────────────────────
         p2rank_probs = None

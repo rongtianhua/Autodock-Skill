@@ -479,6 +479,58 @@ def cmd_run(args):
     print(f"  📊 2D diagram:      {diagram_out}")
 
 
+def cmd_pharmacophore(args):
+    """Detect and render pharmacophore features."""
+    from autodock._pharmacophore import detect_pharmacophore, render_pharmacophore, summarize_features
+
+    center = tuple(args.center) if args.center else None
+
+    autodock_logger.info(f"Detecting pharmacophore in {args.receptor}...")
+    features = detect_pharmacophore(
+        receptor_pdb=args.receptor,
+        ligand_pdbqt=args.ligand,
+        center=center,
+        distance=args.distance,
+    )
+
+    print(summarize_features(features))
+
+    if features and args.output:
+        autodock_logger.info(f"Rendering to {args.output}...")
+        success = render_pharmacophore(args.receptor, features, args.output)
+        if success:
+            print(f"\n✓ Pharmacophore rendered: {args.output}")
+        else:
+            print(f"\n⚠️  Rendering failed (PyMOL may not be available)")
+
+
+def cmd_validate_pose(args):
+    """Validate docking pose stability."""
+    from autodock._md_validation import validate_pose_stability
+
+    autodock_logger.info(f"Validating pose stability ({args.protocol} protocol)...")
+    result = validate_pose_stability(
+        receptor_pdb=args.receptor,
+        ligand_pdbqt=args.ligand,
+        protocol=args.protocol,
+        output_dir=args.output_dir,
+    )
+
+    print(f"\n{'═'*50}")
+    print(f"  Pose Stability Validation ({result['protocol']})")
+    print(f"{'═'*50}")
+    print(f"  OpenMM available : {result['openmm_available']}")
+    if result['openmm_available']:
+        print(f"  Ligand RMSD      : {result['ligand_rmsd']:.3f} Å")
+        print(f"  Energy Δ         : {result['energy_delta']:.2f} kcal/mol")
+        print(f"  Minimized pose   : {result['minimized_pdb']}")
+        status = '✓ STABLE' if result['is_stable'] else '✗ UNSTABLE'
+        print(f"  Status           : {status}")
+    if result['warnings']:
+        print(f"  Warnings         : {', '.join(result['warnings'])}")
+    print(f"{'═'*50}")
+
+
 def cmd_bindingdb(args):
     """Query BindingDB for experimental binding affinities"""
     from autodock._structure_fetch import fetch_bindingdb_affinity, fetch_bindingdb_by_target
@@ -657,6 +709,27 @@ def main():
     p_val.add_argument('receptor', help='Receptor PDBQT')
     p_val.add_argument('crystal_ligand', help='Crystal ligand PDBQT')
     p_val.set_defaults(func=cmd_validate)
+
+    # pharmacophore
+    p_pharm = subparsers.add_parser('pharmacophore', help='Detect pharmacophore features from binding pocket')
+    p_pharm.add_argument('receptor', help='Receptor PDB file')
+    p_pharm.add_argument('--ligand', help='Ligand PDBQT to define binding site center')
+    p_pharm.add_argument('--center', nargs=3, type=float,
+                        help='Binding site center (x y z)')
+    p_pharm.add_argument('--distance', type=float, default=5.0,
+                        help='Pocket radius in Å (default: 5.0)')
+    p_pharm.add_argument('-o', '--output', default='pharmacophore.png',
+                        help='Output PNG file (default: pharmacophore.png)')
+    p_pharm.set_defaults(func=cmd_pharmacophore)
+
+    # validate-pose
+    p_stab = subparsers.add_parser('validate-pose', help='Validate docking pose stability via energy minimization')
+    p_stab.add_argument('receptor', help='Receptor PDB file')
+    p_stab.add_argument('ligand', help='Docked ligand PDBQT file')
+    p_stab.add_argument('--protocol', choices=['quick', 'short'], default='quick',
+                        help='Validation protocol (default: quick)')
+    p_stab.add_argument('--output-dir', help='Output directory')
+    p_stab.set_defaults(func=cmd_validate_pose)
 
     # bindingdb
     p_bind = subparsers.add_parser('bindingdb', help='Query BindingDB for experimental affinities')

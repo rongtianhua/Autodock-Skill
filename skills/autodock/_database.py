@@ -155,7 +155,7 @@ def compute_enrichment(screened_smiles: list, bioactivity_data: dict,
 def print_enrichment_report(stats: dict, target_name: str = None):
     """Print a formatted enrichment statistics report."""
     if "error" in stats:
-        print(f"[autodock] Enrichment error: {stats['error']}")
+        autodock_logger.error(f"Enrichment error: {stats['error']}")
         return
     sep = "=" * 55
     hdr = "Enrichment Statistics"

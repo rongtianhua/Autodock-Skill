@@ -74,19 +74,19 @@ def clear_cache(confirm: bool = True) -> dict:
     cache = _get_cache_dir()
     files = [f for f in cache.iterdir() if f.is_file()]
     if not files:
-        print(f"[structure_fetch] Cache is already empty: {cache}")
+        autodock_logger.info(f"Cache is already empty: {cache}")
         return {'cleared': [], 'size_mb': 0.0}
 
     total_mb = sum(f.stat().st_size for f in files) / (1024 * 1024)
-    print(f"[structure_fetch] Cache: {len(files)} files, {total_mb:.1f} MB")
-    print(f"  Location: {cache}")
+    autodock_logger.info(f"Cache: {len(files)} files, {total_mb:.1f} MB")
+    autodock_logger.info(f"  Location: {cache}")
     for f in sorted(files):
-        print(f"    {f.name} ({f.stat().st_size / 1024:.0f} KB)")
+        autodock_logger.info(f"    {f.name} ({f.stat().st_size / 1024:.0f} KB)")
 
     if confirm:
         response = input("\n  Delete all cached files? [y/N]: ").strip().lower()
         if response != 'y':
-            print("  Aborted — cache not modified.")
+            autodock_logger.info("  Aborted — cache not modified.")
             return {'cleared': [], 'size_mb': 0.0}
 
     cleared = []
@@ -95,7 +95,7 @@ def clear_cache(confirm: bool = True) -> dict:
         cleared.append(str(f))
 
     freed_mb = total_mb
-    print(f"[structure_fetch] Cleared {len(cleared)} files, freed {freed_mb:.1f} MB")
+    autodock_logger.info(f"Cleared {len(cleared)} files, freed {freed_mb:.1f} MB")
     return {'cleared': cleared, 'size_mb': freed_mb}
 
 
@@ -143,25 +143,25 @@ def _cif_to_pdb(cif_path: str, pdb_path: str) -> str:
     try:
         result = subprocess.run(['obabel', '-V'], capture_output=True, timeout=5)
         if result.returncode != 0:
-            raise RuntimeError("OpenBabel not available")
+            raise StructureFetchError("OpenBabel not available")
     except Exception as e:
-        raise RuntimeError(f"OpenBabel check failed: {e}")
+        raise StructureFetchError(f"OpenBabel check failed: {e}") from e
 
     # Run conversion: obabel -icif input.cif -opdb -O output.pdb
     cmd = ['obabel', '-icif', cif_path, '-opdb', '-O', pdb_path]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
 
     if result.returncode != 0:
-        raise RuntimeError(f"OpenBabel conversion failed: {result.stderr}")
+        raise StructureFetchError(f"OpenBabel conversion failed: {result.stderr}")
 
     # Validate output
     if not os.path.exists(pdb_path) or os.path.getsize(pdb_path) == 0:
-        raise RuntimeError("OpenBabel produced empty output")
+        raise StructureFetchError("OpenBabel produced empty output")
 
     with open(pdb_path) as f:
         content = f.read()
     if 'ATOM' not in content:
-        raise RuntimeError("Converted file has no ATOM records")
+        raise StructureFetchError("Converted file has no ATOM records")
 
     return pdb_path
 
@@ -225,7 +225,7 @@ def fetch_protein_pdb(pdb_id: str, output_path: str = None,
                 f"but OpenBabel is not available. Install: conda install -c conda-forge openbabel"
             )
         # Fallback to .pdb for legacy IDs
-        print(f"[structure_fetch] OpenBabel not available, falling back to .pdb for {pdb_id}")
+        autodock_logger.warning(f"OpenBabel not available, falling back to .pdb for {pdb_id}")
         format = 'pdb'
 
     # Cache and download paths
@@ -248,7 +248,7 @@ def fetch_protein_pdb(pdb_id: str, output_path: str = None,
             os.makedirs(working_dir, exist_ok=True)
             import shutil
             shutil.copy2(pdb_cache, working)
-        print(f"[structure_fetch] PDB cached: {pdb_cache} → {working}")
+        autodock_logger.info(f"PDB cached: {pdb_cache} → {working}")
         return working
 
     # ── Download .cif, convert to .pdb ──────────────────────────────────
@@ -257,11 +257,11 @@ def fetch_protein_pdb(pdb_id: str, output_path: str = None,
         try:
             # Download .cif
             urllib.request.urlretrieve(cif_url, str(cif_cache))
-            print(f"[structure_fetch] CIF downloaded: {cif_url} → {cif_cache}")
+            autodock_logger.info(f"CIF downloaded: {cif_url} → {cif_cache}")
 
             # Convert to .pdb
             _cif_to_pdb(str(cif_cache), str(pdb_cache))
-            print(f"[structure_fetch] CIF→PDB converted: {cif_cache} → {pdb_cache}")
+            autodock_logger.info(f"CIF→PDB converted: {cif_cache} → {pdb_cache}")
 
             # Copy to working path
             if working != str(pdb_cache):
@@ -272,10 +272,10 @@ def fetch_protein_pdb(pdb_id: str, output_path: str = None,
         except (urllib.error.HTTPError, RuntimeError) as e:
             # .cif failed — try .pdb fallback (only for legacy 4-char IDs)
             if is_legacy:
-                print(f"[structure_fetch] .cif failed ({e}), falling back to .pdb...")
+                autodock_logger.warning(f".cif failed ({e}), falling back to .pdb...")
                 # Continue to .pdb download below
             else:
-                raise RuntimeError(f"Extended PDB ID {pdb_id} only available in .cif: {e}")
+                raise StructureFetchError(f"Extended PDB ID {pdb_id} only available in .cif: {e}")
 
     # ── Download .pdb (legacy format or fallback) ─────────────────────────
     os.makedirs(working_dir, exist_ok=True)
@@ -284,14 +284,14 @@ def fetch_protein_pdb(pdb_id: str, output_path: str = None,
         with open(working) as f:
             content = f.read()
         if 'HEADER' not in content and 'ATOM' not in content:
-            raise ValueError(f"Downloaded file is not a valid PDB: {pdb_id}")
+            raise StructureFetchError(f"Downloaded file is not a valid PDB: {pdb_id}")
         # Populate cache
         import shutil
         shutil.copy2(working, pdb_cache)
-        print(f"[structure_fetch] PDB downloaded: {pdb_id} → {working} (cached at {pdb_cache})")
+        autodock_logger.info(f"PDB downloaded: {pdb_id} → {working} (cached at {pdb_cache})")
         return working
     except urllib.error.HTTPError as e:
-        raise ValueError(f"PDB not found: {pdb_id} (HTTP {e.code})")
+        raise StructureFetchError(f"PDB not found: {pdb_id} (HTTP {e.code})")
 
 
 def fetch_protein_alphafold(uniprot_id: str, output_path: str = None) -> str:
@@ -320,11 +320,11 @@ def fetch_protein_alphafold(uniprot_id: str, output_path: str = None) -> str:
             content = f.read()
         # Use regex to ensure at least one real ATOM record (not REMARK/HEADER/COMPND)
         if not re.search(r'^ATOM ', content, re.MULTILINE):
-            raise ValueError(f"AlphaFold structure has no ATOM records: {uniprot_id}")
-        print(f"[structure_fetch] AlphaFold downloaded: {dest}")
+            raise StructureFetchError(f"AlphaFold structure has no ATOM records: {uniprot_id}")
+        autodock_logger.info(f"AlphaFold downloaded: {dest}")
         return dest
     except urllib.error.HTTPError as e:
-        raise ValueError(f"AlphaFold entry not found: {uniprot_id} (HTTP {e.code})")
+        raise StructureFetchError(f"AlphaFold entry not found: {uniprot_id} (HTTP {e.code})")
 
 
 def fetch_protein_swissmodel(uniprot_id: str, output_path: str = None,
@@ -369,10 +369,10 @@ def fetch_protein_swissmodel(uniprot_id: str, output_path: str = None,
             data = json.loads(resp.read())
             all_structures = data.get('result', {}).get('structures', [])
     except Exception as e:
-        raise ValueError(f"SWISS-MODEL lookup failed: {e}")
+        raise StructureFetchError(f"SWISS-MODEL lookup failed: {e}")
 
     if not all_structures:
-        raise ValueError(f"No SWISS-MODEL structures available for: {uniprot_id}")
+        raise StructureFetchError(f"No SWISS-MODEL structures available for: {uniprot_id}")
 
     # ── Extract quality scores and filter ───────────────────────────
     candidates = []
@@ -415,7 +415,7 @@ def fetch_protein_swissmodel(uniprot_id: str, output_path: str = None,
         })
 
     if not candidates:
-        raise ValueError(
+        raise StructureFetchError(
             f"No SWISS-MODEL structures meet criteria for {uniprot_id} "
             f"(provider={provider_filter}, min_coverage={min_coverage}, "
             f"min_identity={min_identity})"
@@ -454,7 +454,7 @@ def fetch_protein_swissmodel(uniprot_id: str, output_path: str = None,
                 logger.warning(f"[structure_fetch] Download failed for model #{i+1}: {e}")
 
         if not results:
-            raise ValueError(f"All downloads failed for {uniprot_id}")
+            raise StructureFetchError(f"All downloads failed for {uniprot_id}")
         return results
 
     # Single best model
@@ -472,7 +472,7 @@ def fetch_protein_swissmodel(uniprot_id: str, output_path: str = None,
         )
         return dest
     except urllib.error.HTTPError as e:
-        raise ValueError(f"SWISS-MODEL download failed: {uniprot_id} (HTTP {e.code})")
+        raise StructureFetchError(f"SWISS-MODEL download failed: {uniprot_id} (HTTP {e.code})")
 
 
 def fetch_protein_swissmodel_advanced(uniprot_id: str,
@@ -633,7 +633,7 @@ def fetch_protein_pdb_redo(pdb_id: str, output_path: str = None) -> str:
             content = f.read()
         if 'ATOM' not in content:
             raise ValueError(f"PDBredo fetch returned non-PDB content for: {pdb_id}")
-        print(f"[structure_fetch] PDBredo downloaded: {dest}")
+        autodock_logger.info(f"PDBreado downloaded: {dest}")
         return dest
     except urllib.error.HTTPError as e:
         raise ValueError(f"PDBredo entry not found: {pdb_id} (HTTP {e.code})")
@@ -689,14 +689,14 @@ def fetch_protein(pdb_id: str = None,
         try:
             return fetch_protein_pdb(pdb_id, out_path(pdb_id))
         except Exception as e:
-            print(f"[fetch_protein] PDB failed ({e}), trying PDB-REDO...")
+            autodock_logger.warning(f"PDB failed ({e}), trying PDB-REDO...")
             try:
                 return fetch_protein_pdb_redo(pdb_id, out_path(f"{pdb_id}_redo"))
             except Exception:
                 pass
         # Fall through to AlphaFold if PDB both fail
         if uniprot_id:
-            print(f"[fetch_protein] PDB/PDBREDO failed, falling back to AlphaFold...")
+            autodock_logger.warning(f"PDB/PDBREDO failed, falling back to AlphaFold...")
             return fetch_protein_alphafold(uniprot_id, out_path(f"AF-{uniprot_id}"))
         raise ValueError(f"All PDB sources failed for: {pdb_id}")
 
@@ -710,7 +710,7 @@ def fetch_protein(pdb_id: str = None,
             try:
                 return src_fn(uniprot_id, path_fn(uniprot_id))
             except Exception as e:
-                print(f"[fetch_protein] {src_name} failed ({e})")
+                autodock_logger.warning(f"{src_name} failed ({e})")
                 tried.append(src_name)
                 continue
         raise ValueError(f"All sources failed for UniProt {uniprot_id}: {tried}")
@@ -775,7 +775,7 @@ def fetch_molecule_pubchem(identifier: str,
     }
 
     if not output_sdf:
-        print(f"[structure_fetch] PubChem: {name} (CID: {cid})")
+        autodock_logger.info(f"PubChem: {name} (CID: {cid})")
         return result
 
     # ── SDF: check cache first, then download ────────────────────────────
@@ -787,7 +787,7 @@ def fetch_molecule_pubchem(identifier: str,
         shutil.copy2(cache_sdf, output_sdf)
         result['sdf_path'] = output_sdf
         result['cached'] = True
-        print(f"[structure_fetch] PubChem SDF cached: {cache_sdf} → {output_sdf}")
+        autodock_logger.info(f"PubChem SDF cached: {cache_sdf} → {output_sdf}")
         return result
 
     # Download SDF and populate cache.
@@ -810,7 +810,7 @@ def fetch_molecule_pubchem(identifier: str,
     if sdf_valid:
         _shutil.copy2(output_sdf, cache_sdf)
         result['sdf_path'] = output_sdf
-        print(f"[structure_fetch] PubChem: {name} (CID: {cid}) → {output_sdf} (cached at {cache_sdf})")
+        autodock_logger.info(f"PubChem: {name} (CID: {cid}) → {output_sdf} (cached at {cache_sdf})")
     else:
         # SDF missing/truncated: generate 3D from SMILES using RDKit ETKDGv3
         if _HAVE_RDKIT:
@@ -828,11 +828,11 @@ def fetch_molecule_pubchem(identifier: str,
                 writer.close()
                 _shutil.copy2(output_sdf, cache_sdf)
                 result['sdf_path'] = output_sdf
-                print(f"[structure_fetch] PubChem SDF truncated; RDKit ETKDGv3 generated 3D: {output_sdf}")
+                autodock_logger.warning(f"PubChem SDF truncated; RDKit ETKDGv3 generated 3D: {output_sdf}")
                 return result
         # RDKit not available: keep output_sdf as-is (degraded but usable)
         result['sdf_path'] = output_sdf
-        print(f"[structure_fetch] PubChem: {name} (CID: {cid}) → {output_sdf} (SDF may be incomplete, SMILES OK)")
+        autodock_logger.warning(f"PubChem: {name} (CID: {cid}) → {output_sdf} (SDF may be incomplete, SMILES OK)")
     return result
 
 
@@ -870,13 +870,13 @@ def fetch_molecule_chembl(chembl_id: str = None,
             'smiles': smiles,
             'max_phase': data.get('max_phase', ''),
         }
-        print(f"[structure_fetch] ChEMBL: {result['name']} ({result['chembl_id']})")
+        autodock_logger.info(f"ChEMBL: {result['name']} ({result['chembl_id']})")
         return result
 
     except urllib.error.HTTPError as e:
-        raise ValueError(f"ChEMBL not found: HTTP {e.code}")
+        raise DataSourceError(f"ChEMBL not found: HTTP {e.code}")
     except Exception as e:
-        raise ValueError(f"ChEMBL error: {e}")
+        raise DataSourceError(f"ChEMBL error: {e}")
 
 
 def fetch_molecule_drugbank(drugbank_id: str = None,
@@ -973,7 +973,7 @@ def fetch_molecule_opsin(identifier: str) -> dict:
         if len(smiles) > 2000:
             raise ValueError(f"OPSIN returned invalid SMILES for: {identifier}")
 
-        print(f"[structure_fetch] OPSIN: {identifier} → {smiles[:50]}...")
+        autodock_logger.info(f"OPSIN: {identifier} → {smiles[:50]}...")
         return {
             'name': identifier,
             'smiles': smiles,
@@ -989,7 +989,7 @@ def fetch_molecule_opsin(identifier: str) -> dict:
     try:
         result = fetch_molecule_pubchem(identifier, identifier_type='name')
         result['source'] = f"PubChem (OPSIN fallback for '{identifier}')"
-        print(f"[structure_fetch] PubChem fallback: {identifier} → {result['smiles'][:50]}...")
+        autodock_logger.info(f"PubChem fallback: {identifier} → {result['smiles'][:50]}...")
         return result
     except Exception as e2:
         raise ValueError(
@@ -1028,7 +1028,7 @@ def fetch_molecule_cactus(identifier: str) -> dict:
         if len(smiles) > 2000:
             raise ValueError(f"CACTUS returned invalid SMILES for: {identifier}")
 
-        print(f"[structure_fetch] CACTUS: {identifier} → {smiles[:50]}...")
+        autodock_logger.info(f"CACTUS: {identifier} → {smiles[:50]}...")
         return {
             'name': identifier,
             'smiles': smiles,
@@ -1044,7 +1044,7 @@ def fetch_molecule_cactus(identifier: str) -> dict:
     try:
         result = fetch_molecule_pubchem(identifier, identifier_type='name')
         result['source'] = f"PubChem (CACTUS fallback for '{identifier}')"
-        print(f"[structure_fetch] PubChem fallback: {identifier} → {result['smiles'][:50]}...")
+        autodock_logger.info(f"PubChem fallback: {identifier} → {result['smiles'][:50]}...")
         return result
     except Exception as e2:
         raise ValueError(
@@ -1183,7 +1183,7 @@ def fetch_ligand_from_pdb(pdb_id: str, ligand_id: str,
     except Exception as e:
         raise ValueError(f"Ligand download failed for {pdb_id}/{ligand_id}: {e}")
 
-    print(f"[structure_fetch] Ligand {ligand_id} from {pdb_id}: {output_path}")
+    autodock_logger.info(f"Ligand {ligand_id} from {pdb_id}: {output_path}")
     return output_path
 
 
@@ -1253,7 +1253,7 @@ def swissmodel_get_token(username: str = None, password: str = None) -> str:
     with open(_SWISSMODEL_TOKEN_FILE, 'w') as f:
         _json.dump({"token": token}, f)
 
-    print(f"[structure_fetch] SwissModel token cached: {_SWISSMODEL_TOKEN_FILE}")
+    autodock_logger.info(f"SwissModel token cached: {_SWISSMODEL_TOKEN_FILE}")
     return token
 
 
@@ -1261,7 +1261,7 @@ def swissmodel_clear_token() -> None:
     """Clear cached SwissModel token."""
     if _SWISSMODEL_TOKEN_FILE.exists():
         _SWISSMODEL_TOKEN_FILE.unlink()
-        print("[structure_fetch] SwissModel token cleared")
+        autodock_logger.info("SwissModel token cleared")
 
 
 def swissmodel_submit_alignment(token: str,
@@ -1337,7 +1337,7 @@ def swissmodel_submit_alignment(token: str,
     except Exception as e:
         raise RuntimeError(f"SwissModel alignment submission failed: {e}")
 
-    print(f"[structure_fetch] SwissModel alignment submitted: {result.get('project_id', 'N/A')}")
+    autodock_logger.info(f"SwissModel alignment submitted: {result.get('project_id', 'N/A')}")
     return result
 
 
@@ -1389,7 +1389,7 @@ def swissmodel_download_result(token: str, project_id: str, model_id: str,
                 raise ValueError("No download URL in response")
 
         urllib.request.urlretrieve(download_url, output_path)
-        print(f"[structure_fetch] SwissModel result: {output_path}")
+        autodock_logger.info(f"SwissModel result: {output_path}")
         return output_path
     except Exception as e:
         raise RuntimeError(f"Download failed: {e}")

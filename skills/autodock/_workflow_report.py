@@ -204,9 +204,9 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 3:
-        print("Usage: python _workflow_report.py <results.csv> <output.html>")
+        autodock_logger.info("Usage: python _workflow_report.py <results.csv> <output.html>")
         sys.exit(1)
 
     df = pd.read_csv(sys.argv[1])
     generate_html_report(df, sys.argv[2])
-    print(f"Report written: {sys.argv[2]}")
+    autodock_logger.info(f"Report written: {sys.argv[2]}")

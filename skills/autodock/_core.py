@@ -51,17 +51,6 @@ class DataSourceError(DockingError):
 
 
 # Autodock logger — can be silenced via autodock_logger.setLevel(logging.WARNING)
-
-import os
-import tempfile
-import warnings
-import logging
-from typing import Optional, Callable
-import signal
-from dataclasses import dataclass, field, asdict
-from datetime import datetime
-
-# Autodock logger — can be silenced via autodock_logger.setLevel(logging.WARNING)
 # File logging is enabled automatically if ~/.openclaw/logs/ exists.
 autodock_logger = logging.getLogger("autodock")
 autodock_logger.setLevel(logging.DEBUG)
