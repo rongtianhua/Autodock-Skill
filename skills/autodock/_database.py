@@ -128,14 +128,14 @@ def compute_enrichment(screened_smiles: list, bioactivity_data: dict,
     auc = float(scipy_stats.roc_auc_score(y_true, y_score))
     alpha, m = 20.0, n_active
     r_i = np.where(is_active)[0] + 1
-    def _bedroc(ranks, n, m, alpha):
+    def _bedroc(ranks: np.ndarray, n: int, m: int, alpha: float) -> float:
         if m == 0 or n == 0:
             return 0.0
         s = sum(np.exp(-alpha * ri / n) for ri in ranks)
         random_sum = (1 - np.exp(-alpha)) / (n * (1 - np.exp(-alpha / n)))
         return s / (m * random_sum) if random_sum else 0.0
     bedroc = _bedroc(r_i, n_total, m, alpha)
-    def ef_at_fraction(frac):
+    def ef_at_fraction(frac: float) -> float:
         k = max(1, int(np.ceil(n_total * frac)))
         hits_topk = int(is_active[:k].sum())
         return float((hits_topk / m) / frac) if m > 0 else 0.0
@@ -152,8 +152,8 @@ def compute_enrichment(screened_smiles: list, bioactivity_data: dict,
             "n_hits_top1pct": int(is_active[:top1pct_k].sum()),
             "active_names": active_names, "recall_top10pct": recall_top10pct}
 
-def print_enrichment_report(stats: dict, target_name: str = None):
-    """Print a formatted enrichment statistics report."""
+def print_enrichment_report(stats: dict, target_name: str = None) -> None:
+    """Log a formatted enrichment statistics report via the autodock logger."""
     if "error" in stats:
         autodock_logger.error(f"Enrichment error: {stats['error']}")
         return
@@ -163,23 +163,19 @@ def print_enrichment_report(stats: dict, target_name: str = None):
         hdr = f"Enrichment Statistics — {target_name}"
     auc_val = stats["auc"]
     auc_label = "Excellent" if auc_val > 0.9 else "Good" if auc_val > 0.8 else "Fair" if auc_val > 0.7 else "Poor"
-    print(f"\n{sep}\n  {hdr}\n{sep}")
-    print(f"  Screened compounds : {stats['n_screened']}")
-    print(f"  Confirmed actives  : {stats['n_active']} ({100*stats['n_active']/max(stats['n_screened'],1):.1f}%)")
-    print(f"  Decoys / inactives : {stats['n_decoys']}")
-    print(f"\n  -- Global Ranking ----------------------------------------")
-    print(f"  AUC               : {stats['auc']:.4f}  ({auc_label})")
-    print(f"  BEDROC (alpha=20)  : {stats['bedroc']:.4f}")
-    print(f"\n  -- Enrichment Factors ------------------------------------")
+    logger.info(f"Enrichment report — {target_name or 'target'}")
+    logger.info(f"  Screened compounds : {stats['n_screened']}")
+    logger.info(f"  Confirmed actives  : {stats['n_active']} ({100*stats['n_active']/max(stats['n_screened'],1):.1f}%)")
+    logger.info(f"  Decoys / inactives : {stats['n_decoys']}")
+    logger.info(f"  AUC               : {stats['auc']:.4f}  ({auc_label})")
+    logger.info(f"  BEDROC (alpha=20)  : {stats['bedroc']:.4f}")
     for frac, ef in stats["enrichment_factors"].items():
         label = f"EF@{int(frac*100)}%"
         bar = "#" * min(int(ef), 20) if ef > 0 else ""
-        print(f"  {label:<10} : {ef:6.2f}x  {bar}")
-    print(f"\n  -- Early Enrichment --------------------------------------")
-    print(f"  Top 50 hits        : {stats['n_hits_top50']} active compounds")
-    print(f"  Top 1% hits        : {stats['n_hits_top1pct']} active compounds")
-    print(f"  Recall @ top 10%   : {100*stats['recall_top10pct']:.1f}% of all actives found")
-    print(f"{sep}\n")
+        logger.info(f"  {label:<10} : {ef:6.2f}x  {bar}")
+    logger.info(f"  Top 50 hits        : {stats['n_hits_top50']} active compounds")
+    logger.info(f"  Top 1% hits        : {stats['n_hits_top1pct']} active compounds")
+    logger.info(f"  Recall @ top 10%   : {100*stats['recall_top10pct']:.1f}% of all actives found")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -342,7 +338,7 @@ def sample_zinc_compounds(n: int = 100,
 
     collected = []
 
-    def parse_tranche_props(url: str):
+    def parse_tranche_props(url: str) -> tuple[int, float | None, int | None]:
         """Extract (h_donors, logp, mw) from ZINC22 tranche URL.
         
         URL patterns:

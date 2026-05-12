@@ -176,10 +176,10 @@ def validate_docking_protocol(receptor_pdbqt: str,
         ...     print(f"WARNING: RMSD={result['rms_atom']:.2f} Å > {rmsd_threshold} Å")
     """
     logger.info(f"[autodock] === Redocking Validation ===")
-    print(f"  Receptor: {receptor_pdbqt}")
-    print(f"  Ligand (crystal): {ligand_crystal_pdbqt}")
-    print(f"  Center: {center}, Box: {box_size}")
-    print(f"  exhaustiveness={exhaustiveness}, threshold={rmsd_threshold} Å")
+    logger.info(f"  Receptor: {receptor_pdbqt}")
+    logger.info(f"  Ligand (crystal): {ligand_crystal_pdbqt}")
+    logger.info(f"  Center: {center}, Box: {box_size}")
+    logger.info(f"  exhaustiveness={exhaustiveness}, threshold={rmsd_threshold} Å")
 
     # Step 1: Dock the crystal ligand back
     energies, poses = dock_ligand(
