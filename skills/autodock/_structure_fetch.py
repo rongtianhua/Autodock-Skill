@@ -15,10 +15,49 @@ import hashlib
 import urllib.request
 import urllib.error
 import urllib.parse
+import time
 from pathlib import Path
 
-from autodock._core import autodock_logger, _HAVE_OBABEL
+from autodock._core import autodock_logger, _HAVE_OBABEL, StructureFetchError
 logger = autodock_logger
+
+
+def _urlretrieve_with_retry(url: str, dest: str | Path,
+                             max_retries: int = 3,
+                             base_delay: float = 1.0) -> None:
+    """
+    Download a URL with exponential-backoff retry on failure.
+
+    Args:
+        url:          URL to download
+        dest:         Destination file path
+        max_retries:  Maximum retry attempts (default 3)
+        base_delay:   Initial delay in seconds (default 1.0 → 1s, 2s, 4s)
+
+    Raises:
+        StructureFetchError: If all retries fail
+    """
+    dest = str(dest)
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            urllib.request.urlretrieve(url, dest)
+            return  # Success
+        except urllib.error.HTTPError as e:
+            last_err = e
+            # Don't retry 4xx client errors (except 429)
+            if 400 <= e.code < 500 and e.code != 429:
+                raise StructureFetchError(f"HTTP {e.code} for {url}")
+        except (OSError, IOError) as e:
+            last_err = e
+
+        if attempt < max_retries - 1:
+            delay = base_delay * (2 ** attempt)
+            logger.warning(f"[structure_fetch] Download attempt {attempt+1} failed for {url} "
+                           f"— retrying in {delay:.1f}s ({e})")
+            time.sleep(delay)
+
+    raise StructureFetchError(f"Failed after {max_retries} retries: {url} ({last_err})")
 
 try:
     from rdkit import Chem
@@ -200,11 +239,16 @@ def fetch_protein_pdb(pdb_id: str, output_path: str = None,
     """
     pdb_id = pdb_id.upper()
 
-    # Validate PDB ID
-    is_legacy = len(pdb_id) == 4
-    is_extended = len(pdb_id) > 4
-    if not (is_legacy or is_extended):
-        raise ValueError(f"Invalid PDB ID: {pdb_id} (must be 4 or 12+ characters)")
+    # Validate PDB ID format before any network call
+    # Legacy (4-char): must be 4 alphanumeric chars (e.g. 1COV, 6LU7)
+    # Extended (>4-char): must start with "PDB_" prefix (RCSB convention)
+    # Reject anything else (including garbage strings like "INVALID") as plain invalid
+    is_extended = pdb_id.startswith('PDB_') and len(pdb_id) > 4
+    if len(pdb_id) == 4:
+        if not pdb_id.isalnum():
+            raise ValueError(f"Invalid PDB ID: {pdb_id} (must be 4 alphanumeric characters)")
+    elif not is_extended:
+        raise ValueError(f"Invalid PDB ID: {pdb_id} (must be 4 alphanumeric characters)")
 
     # Determine format strategy
     if format == 'auto':
@@ -256,7 +300,7 @@ def fetch_protein_pdb(pdb_id: str, output_path: str = None,
         os.makedirs(working_dir, exist_ok=True)
         try:
             # Download .cif
-            urllib.request.urlretrieve(cif_url, str(cif_cache))
+            _urlretrieve_with_retry(cif_url, str(cif_cache))
             autodock_logger.info(f"CIF downloaded: {cif_url} → {cif_cache}")
 
             # Convert to .pdb
@@ -280,7 +324,7 @@ def fetch_protein_pdb(pdb_id: str, output_path: str = None,
     # ── Download .pdb (legacy format or fallback) ─────────────────────────
     os.makedirs(working_dir, exist_ok=True)
     try:
-        urllib.request.urlretrieve(pdb_url, working)
+        _urlretrieve_with_retry(pdb_url, working)
         with open(working) as f:
             content = f.read()
         if 'HEADER' not in content and 'ATOM' not in content:
@@ -315,7 +359,7 @@ def fetch_protein_alphafold(uniprot_id: str, output_path: str = None) -> str:
     os.makedirs(os.path.dirname(dest) or '.', exist_ok=True)
 
     try:
-        urllib.request.urlretrieve(url, dest)
+        _urlretrieve_with_retry(url, dest)
         with open(dest) as f:
             content = f.read()
         # Use regex to ensure at least one real ATOM record (not REMARK/HEADER/COMPND)
@@ -435,7 +479,7 @@ def fetch_protein_swissmodel(uniprot_id: str, output_path: str = None,
             suffix = f"_{i}" if i > 0 else ""
             dest = os.path.join(base_dir, f"{base_name}{suffix}.pdb")
             try:
-                urllib.request.urlretrieve(c['url'], dest)
+                _urlretrieve_with_retry(c['url'], dest)
                 results.append({
                     'path': dest,
                     'provider': c['provider'],
@@ -463,7 +507,7 @@ def fetch_protein_swissmodel(uniprot_id: str, output_path: str = None,
     os.makedirs(os.path.dirname(dest) or '.', exist_ok=True)
 
     try:
-        urllib.request.urlretrieve(best['url'], dest)
+        _urlretrieve_with_retry(best['url'], dest)
         logger.info(
             f"[structure_fetch] SWISS-MODEL best model: {dest} "
             f"(provider={best['provider']}, template={best['template']}, "
@@ -628,7 +672,7 @@ def fetch_protein_pdb_redo(pdb_id: str, output_path: str = None) -> str:
     os.makedirs(os.path.dirname(dest) or '.', exist_ok=True)
 
     try:
-        urllib.request.urlretrieve(url, dest)
+        _urlretrieve_with_retry(url, dest)
         with open(dest) as f:
             content = f.read()
         if 'ATOM' not in content:
@@ -797,7 +841,7 @@ def fetch_molecule_pubchem(identifier: str,
     import shutil as _shutil
     working_dir = os.path.dirname(output_sdf) or '.'
     os.makedirs(working_dir, exist_ok=True)
-    urllib.request.urlretrieve(sdf_url, output_sdf)
+    _urlretrieve_with_retry(sdf_url, output_sdf)
     # Validate SDF: must have V2000 header + at least one atom record
     sdf_valid = False
     try:
@@ -1177,7 +1221,7 @@ def fetch_ligand_from_pdb(pdb_id: str, ligand_id: str,
     url = f"https://models.rcsb.org/v1/{pdb_id}/ligand?auth_asym_id={ligand_id}&encoding=sdf"
 
     try:
-        urllib.request.urlretrieve(url, output_path)
+        _urlretrieve_with_retry(url, output_path)
         if os.path.getsize(output_path) == 0:
             raise ValueError(f"Empty ligand file returned for {pdb_id}/{ligand_id}")
     except Exception as e:
@@ -1388,7 +1432,7 @@ def swissmodel_download_result(token: str, project_id: str, model_id: str,
             if not download_url:
                 raise ValueError("No download URL in response")
 
-        urllib.request.urlretrieve(download_url, output_path)
+        _urlretrieve_with_retry(download_url, output_path)
         autodock_logger.info(f"SwissModel result: {output_path}")
         return output_path
     except Exception as e:

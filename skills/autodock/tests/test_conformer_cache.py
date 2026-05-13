@@ -92,8 +92,9 @@ class TestPrepareLigandConformers:
             assert f0.read() != f1.read(), "Same seed should not give identical conformers"
 
     def test_invalid_smiles_raises(self, tmp_path):
-        """Invalid SMILES should raise ValueError."""
-        with pytest.raises(ValueError):
+        """Invalid SMILES should raise PreparationError."""
+        from autodock._core import PreparationError
+        with pytest.raises(PreparationError):
             prepare_ligand_conformers(
                 smiles='NOT_A_SMILE[[[',
                 output_dir=str(tmp_path / 'bad'),

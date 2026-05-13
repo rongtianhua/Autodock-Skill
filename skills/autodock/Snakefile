@@ -11,7 +11,20 @@
 
 from snakemake.io import protected, expand
 import os
+import sys
 import pandas as pd
+
+# ── Config validation (early fail with human-readable errors) ────────────────
+sys.path.insert(0, os.path.dirname(workflow.basedir))
+try:
+    from schemas.docking_config import validate_config
+    config = validate_config(config)
+except ValueError as e:
+    print(f"\n{'='*60}\n{e}\n{'='*60}\n")
+    raise SystemExit(1)
+except ImportError:
+    # pydantic not installed — continue without validation
+    pass
 
 PYTHON = "/opt/homebrew/Caskroom/miniconda/base/envs/autodock313/bin/python"
 SKILL_DIR = "/Users/allenrong/.openclaw/workspace/skills/autodock"

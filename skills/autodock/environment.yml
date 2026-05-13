@@ -1,0 +1,29 @@
+name: autodock313
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.13
+  - pip
+  - numpy
+  - pandas
+  - scipy
+  - matplotlib
+  - biopython
+  - rdkit>=2026.03.1
+  - openbabel
+  - fpocket>=4.2.3
+  - snakemake-minimal>=8.0
+  - pydantic>=2.0
+  - pillow
+  - pyyaml
+  - requests
+  - tqdm
+  - pip:
+    - vina>=1.2.5
+    - meeko>=0.7.1
+    - plip>=2.3.0
+    - cairosvg
+    - prody
+    - rdkit-pypi

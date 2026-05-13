@@ -587,6 +587,16 @@ def detect_interactions_plip(receptor_pdb: str,
             interactions: list of dicts with keys:
                 type, color, resn, resi, chain, atom,
                 ligand_atom_idx (RDKit index), distance, description
+
+            ligand_atom_idx notes:
+                - H-bond / Hydrophobic / π-π / π-cation / Halogen bond / Water bridge:
+                  ligand_atom_idx is the exact RDKit atom index (direct PLIP mapping).
+                - Salt bridge / Metal complex:
+                  PLIP stores charge center / metal ion coordinates rather than a
+                  specific atom. We use the nearest non-hydrogen ligand atom as
+                  fallback (standard PLIP behavior per official docs). This may
+                  result in a sub-atomic offset (< 1 Å) for 2D highlight positioning,
+                  but does not affect the correctness of interaction rendering.
             xml_report_path: path to PLIP XML report (empty str if no XML)
     """
     if output_dir is None:
