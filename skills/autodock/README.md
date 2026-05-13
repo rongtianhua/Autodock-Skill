@@ -28,17 +28,24 @@
 ### 快速开始
 
 ```bash
-# 1. 创建 conda 环境
+# 1. 克隆仓库
+gh repo clone rongtianhua/Autodock-Skill
+cd Autodock-Skill
+
+# 2. 创建 conda 环境
 conda env create -f environment.yml
 conda activate autodock313
 
-# 2. 检查依赖
+# 3. 下载 P2Rank 模型文件（因体积 > 50 MB 未纳入版本控制）
+python tools/p2rank_2.5.1/download_models.py
+
+# 4. 检查依赖
 python -m autodock status
 
-# 3. 一键对接
+# 5. 一键对接
 python -m autodock run --receptor 6LU7 --ligand aspirin
 
-# 4. 或分步执行
+# 6. 或分步执行
 python -m autodock fetch pdb 6LU7
 python -m autodock prepare-receptor 6LU7.pdb receptor.pdbqt
 python -m autodock prepare-ligand aspirin ligand.pdbqt
@@ -117,17 +124,24 @@ python -m autodock dock receptor.pdbqt ligand.pdbqt --center 10 20 30 --box-size
 ### Quick Start
 
 ```bash
-# 1. Create conda environment
+# 1. Clone repo
+gh repo clone rongtianhua/Autodock-Skill
+cd Autodock-Skill
+
+# 2. Create conda environment
 conda env create -f environment.yml
 conda activate autodock313
 
-# 2. Check dependencies
+# 3. Download P2Rank model files (> 50 MB, excluded from git)
+python tools/p2rank_2.5.1/download_models.py
+
+# 4. Check dependencies
 python -m autodock status
 
-# 3. One-command docking
+# 5. One-command docking
 python -m autodock run --receptor 6LU7 --ligand aspirin
 
-# 4. Or step by step
+# 6. Or step by step
 python -m autodock fetch pdb 6LU7
 python -m autodock prepare-receptor 6LU7.pdb receptor.pdbqt
 python -m autodock prepare-ligand aspirin ligand.pdbqt
