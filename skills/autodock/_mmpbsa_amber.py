@@ -125,7 +125,7 @@ class AmberMMPBSAResult:
     delta_g_sa: Optional[float] = None          # Non-polar SASA
 
     # Entropy (if computed)
-    t_delta_s: Optional[float] = None
+    t_delta_s: Optional[float] = None  # -TΔS (kcal/mol) from quasi-harmonic normal-mode entropy (MMPBSA.py, Miller et al. 2012 JCTC 8:3314-3321)
 
     # Per-residue decomposition
     per_residue: Dict[str, float] = field(default_factory=dict)
@@ -664,6 +664,7 @@ def _parse_mmpbsa_summary(output_file: str, method: str = 'gb') -> Dict[str, flo
     # GB/PBSURF          5.678      1.123
     # GB/PBSOLV          2.123      0.456
     # G solvation        7.801      1.579
+    # NMODE             -12.345      2.345  (quasi-harmonic entropy, -TΔS)
 
     patterns = {
         'delta_g_bind': r'DELTA\s+TOTAL\s+([\-\d\.]+)',
@@ -671,6 +672,9 @@ def _parse_mmpbsa_summary(output_file: str, method: str = 'gb') -> Dict[str, flo
         'delta_e_elec': r'EEL\s+([\-\d\.]+)',
         'delta_g_gb': r'(?:GB|PBSURF)\s+([\-\d\.]+)',
         'delta_g_sa': r'(?:GB|PBSOLV)\s+([\-\d\.]+)',
+        # Quasi-harmonic normal-mode entropy (NMODE)
+        # MMPBSA.py outputs -TΔS as NMODE or IGBERY term when nmode_igb=10
+        't_delta_s': r'(?:NMODE|IGBERY)\s+([\-\d\.]+)',
     }
 
     for key, pattern in patterns.items():
@@ -734,11 +738,28 @@ def run_mmpbsa_amber(
     mmpbsa_out = f"{output_prefix}_mmpbsa.out"
 
     with open(mmpbsa_in, 'w') as f:
-        f.write(f"""&general
+        if method == 'gb':
+            # OBC2 (igb=10) + normal mode entropy (nmode_igb=10)
+            # ref: Onufriev et al. (2004) Proteins 55:383-394
+            # ref: Miller et al. (2012) JCTC 8:3314-3321
+            f.write(f"""&general
   startframe={start_frame}, endframe={end_frame}, interval={interval},
   verbose=2, keep_files=0,
 /
-&{method}
+&gb
+  igb=10,            # OBC2 GB model (Onufriev-Bashford-Case 2)
+  saltcon=0.150,
+  probe=1.4,
+  nmode_igb=10,      # Enable normal-mode entropy (-TΔS) via quasi-harmonic analysis
+/
+""")
+        else:
+            # PB method
+            f.write(f"""&general
+  startframe={start_frame}, endframe={end_frame}, interval={interval},
+  verbose=2, keep_files=0,
+/
+&pb
   saltcon=0.150,
   probe=1.4,
 /

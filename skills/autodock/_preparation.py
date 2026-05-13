@@ -415,8 +415,8 @@ def find_top_pockets(receptor_pdb: str,
                     padding: float = 5.0,
                     max_pockets: int = 3,
                     use_p2rank: bool = True,
-                    fpocket_min_alpha: float = 3.4,
-                    fpocket_max_alpha: float = 6.2,
+                    fpocket_min_alpha: float = 3.0,  # fpocket 官方默认值 (Le Guillou et al. 2011)
+                    fpocket_max_alpha: float = 6.0,  # fpocket 官方默认值
                     ligand_pdbqt: str = None) -> list:
     """
     Identify top-N candidate binding pockets (sorted by P2Rank probability desc).

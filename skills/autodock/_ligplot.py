@@ -109,7 +109,8 @@ def parse_ligplot_drw(drw_path: str) -> dict:
     return data
 
 
-def render_ligplot_from_drw(drw_path: str, output_png: str, dpi: int = 300) -> bool:
+def render_ligplot_from_drw(drw_path: str, output_png: str, dpi: int = 300,
+                      bg_color: tuple[int, int, int] = (255, 255, 255)) -> bool:
     """
     Phase 2: Render ligand 2D structure from LIGPLOT .drw file using PIL.
 
@@ -172,8 +173,8 @@ def render_ligplot_from_drw(drw_path: str, output_png: str, dpi: int = 300) -> b
         return (int((x - x_min) * scale + padding),
                 int((y - y_min) * scale + padding))
 
-    # Create image
-    img = Image.new('RGB', (width_px, height_px), (255, 255, 255))
+    # Create image with configurable background (default white, publication standard)
+    img = Image.new('RGB', (width_px, height_px), bg_color)
     draw = ImageDraw.Draw(img)
 
     # Draw bonds first (under atoms)
@@ -244,7 +245,8 @@ def render_ligplot_2d(receptor_pdb: str,
                       output_pdf: str | None = None,
                       output_drw: str | None = None,
                       dpi: int = 300,
-                      interactions: list | None = None) -> bool:
+                      interactions: list | None = None,
+                      bg_color: tuple[int, int, int] = (255, 255, 255)) -> bool:
     """
     Hybrid protein-ligand 2D diagram: RDKit for structure + PIL for arcs.
 
@@ -264,6 +266,7 @@ def render_ligplot_2d(receptor_pdb: str,
         output_pdf: Optional PDF output (via cairosvg)
         output_drw: Optional path to save LIGPLOT .drw file
         dpi: Output resolution
+        bg_color: RGB tuple for background color (default white, publication standard)
 
     Returns:
         True if successful
@@ -544,8 +547,8 @@ def render_ligplot_2d(receptor_pdb: str,
             return (int((x - x_min) * scale + padding),
                     int((y - y_min) * scale + padding))
 
-        # Draw base: white background
-        img = Image.new('RGB', (canvas_w, canvas_h), (255, 255, 179))  # CREAM background
+        # Draw base: white background (publication standard)
+        img = Image.new('RGB', (canvas_w, canvas_h), bg_color)
         draw = ImageDraw.Draw(img)
 
         # Element → color
@@ -561,7 +564,6 @@ def render_ligplot_2d(receptor_pdb: str,
             'Br': (128, 255, 0),      # LIME GREEN — Bromine (other)
             'I': (128, 255, 0),       # LIME GREEN — Iodine (other)
         }
-        bg_color = (255, 255, 255)
 
         # ── Kekulé aromatic bond detection ──
         ring_info = mol.GetRingInfo()

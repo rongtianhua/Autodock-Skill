@@ -1028,8 +1028,8 @@ pockets = find_top_pockets(
     padding=5.0,               # 口袋边缘扩展（Å）
     max_pockets=3,             # 返回前 N 个口袋
     use_p2rank=True,           # 启用 P2Rank 重打分
-    fpocket_min_alpha=3.4,     # fpocket α-球最小半径
-    fpocket_max_alpha=6.2,     # fpocket α-球最大半径
+    fpocket_min_alpha=3.0,     # fpocket α-球最小半径（官方默认值，Le Guillou et al. 2011）
+    fpocket_max_alpha=6.0,     # fpocket α-球最大半径（官方默认值）
 )
 
 # pockets 是按质量排序的列表
