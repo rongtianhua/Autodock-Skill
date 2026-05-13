@@ -7,3 +7,5 @@ build/
 *.log
 .snakemake/
 *.bak
+tools/p2rank_2.5.1/models/**
+*.zst
